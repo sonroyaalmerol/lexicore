@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"codeberg.org/lexicore/lexicore/pkg/config"
 	"codeberg.org/lexicore/lexicore/pkg/controller"
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -29,7 +30,7 @@ func main() {
 	defer logger.Sync()
 
 	// Load configuration
-	config, err := loadConfig(*configPath)
+	_, err := loadConfig(*configPath)
 	if err != nil {
 		logger.Fatal("Failed to load config", zap.Error(err))
 	}
@@ -38,7 +39,7 @@ func main() {
 	mgr := controller.NewManager(logger)
 
 	// Register operators
-	mgr.RegisterOperator(dovecot.NewDovecotOperator())
+	// mgr.RegisterOperator(dovecot.NewDovecotOperator())
 	// Register more operators...
 
 	// Load and register sources from manifests
@@ -115,7 +116,7 @@ func createSource(
 	}
 }
 
-func loadConfig(path string) (*Config, error) {
+func loadConfig(path string) (*config.Config, error) {
 	// Load main configuration
 	return nil, nil
 }

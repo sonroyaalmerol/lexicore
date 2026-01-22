@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Parser struct {
@@ -31,7 +32,7 @@ func (p *Parser) ParseFile(path string) (any, error) {
 func (p *Parser) Parse(data []byte) (any, error) {
 	expanded := os.ExpandEnv(string(data))
 
-	var typeMeta TypeMeta
+	var typeMeta metav1.TypeMeta
 	if err := yaml.Unmarshal([]byte(expanded), &typeMeta); err != nil {
 		return nil, fmt.Errorf("failed to parse type metadata: %w", err)
 	}
@@ -88,9 +89,4 @@ func (p *Parser) ParseDirectory(dir string) ([]any, error) {
 	}
 
 	return manifests, nil
-}
-
-type TypeMeta struct {
-	APIVersion string `yaml:"apiVersion" json:"apiVersion"`
-	Kind       string `yaml:"kind" json:"kind"`
 }

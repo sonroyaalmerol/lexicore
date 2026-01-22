@@ -1,6 +1,10 @@
 package transformer
 
-import "codeberg.org/lexicore/lexicore/pkg/source"
+import (
+	"maps"
+
+	"codeberg.org/lexicore/lexicore/pkg/source"
+)
 
 type MapTransformer struct {
 	mappings map[string]string
@@ -13,15 +17,8 @@ func NewMapTransformer(config map[string]any) (*MapTransformer, error) {
 		defaults: make(map[string]any),
 	}
 
-	// Parse mappings
 	if mappings, ok := config["mappings"].(map[string]any); ok {
-		for k, v := range mappings {
-			if str, ok := v.(string); ok {
-				mt.mappings[k] = str
-			} else {
-				mt.defaults[k] = v
-			}
-		}
+		maps.Copy(mt.defaults, mappings)
 	}
 
 	return mt, nil
@@ -46,11 +43,7 @@ func (m *MapTransformer) Transform(
 			}
 		}
 
-		for key, value := range m.defaults {
-			if _, exists := transformed.Attributes[key]; !exists {
-				transformed.Attributes[key] = value
-			}
-		}
+		maps.Copy(transformed.Attributes, m.defaults)
 
 		transformedIdentities[i] = transformed
 	}

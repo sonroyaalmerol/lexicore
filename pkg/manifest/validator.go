@@ -88,7 +88,7 @@ func (v *Validator) validateTransformer(transformer *TransformerConfig) error {
 
 	// Validate known transformer types
 	switch transformer.Type {
-	case "filter", "map", "template":
+	case "filter", "map", "template", "rules":
 		// Valid types
 	default:
 		// Unknown types are warnings, not errors (for extensibility)
