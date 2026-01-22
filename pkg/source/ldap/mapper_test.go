@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMapper_MapIdentity(t *testing.T) {
+func TestMapper_ConstantIdentity(t *testing.T) {
 	config := &MapperConfig{
 		UIDAttribute:      "uid",
 		UsernameAttribute: "cn",
@@ -27,7 +27,7 @@ func TestMapper_MapIdentity(t *testing.T) {
 		},
 	)
 
-	identity := mapper.MapIdentity(entry)
+	identity := mapper.ConstantIdentity(entry)
 
 	assert.Equal(t, "john123", identity.UID)
 	assert.Equal(t, "john", identity.Username)

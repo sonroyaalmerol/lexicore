@@ -52,14 +52,14 @@ func (p *Pipeline) Execute(
 
 func createTransformer(config manifest.TransformerConfig) (Transformer, error) {
 	switch config.Type {
-	case "filter":
-		return NewFilterTransformer(config.Config)
-	case "map":
-		return NewMapTransformer(config.Config)
+	case "selector":
+		return NewSelectorTransformer(config.Config)
+	case "constant":
+		return NewConstantTransformer(config.Config)
 	case "template":
 		return NewTemplateTransformer(config.Config)
-	case "rule":
-		return NewRuleTransformer(config.Config)
+	case "sanitizer":
+		return NewSanitizerTransformer(config.Config)
 	default:
 		return nil, fmt.Errorf("unknown transformer type: %s", config.Type)
 	}

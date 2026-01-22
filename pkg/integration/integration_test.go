@@ -52,10 +52,10 @@ spec:
   sourceRef: test-source
   operator: mock
   transformers:
-    - name: filter
-      type: filter
+    - name: selector
+      type: selector
       config:
-        groupFilter: admins
+        groupSelector: admins
 `
 
 	// Parse manifest
@@ -78,10 +78,10 @@ spec:
 
 	assert.True(t, op.syncCalled)
 	assert.Equal(t, "Success", target.Status.Status)
-	assert.Equal(t, 1, target.Status.IdentityCount) // Only alice (filtered by group)
+	assert.Equal(t, 1, target.Status.IdentityCount) // Only alice (selectored by group)
 }
 
-func TestMapTransformer_Integration(t *testing.T) {
+func TestConstantTransformer_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
 	}
@@ -111,13 +111,13 @@ func TestMapTransformer_Integration(t *testing.T) {
 apiVersion: lexicore.io/v1
 kind: SyncTarget
 metadata:
-  name: test-map-sync
+  name: test-constant-sync
 spec:
   sourceRef: test-source
   operator: mock
   transformers:
-    - name: map-defaults
-      type: map
+    - name: constant-defaults
+      type: constant
       config:
         mappings:
           domain: example.com
@@ -219,7 +219,7 @@ spec:
 	assert.Equal(t, 2, target.Status.IdentityCount)
 }
 
-func TestFilterTransformer_Integration(t *testing.T) {
+func TestSelectorTransformer_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
 	}
@@ -261,15 +261,15 @@ func TestFilterTransformer_Integration(t *testing.T) {
 apiVersion: lexicore.io/v1
 kind: SyncTarget
 metadata:
-  name: test-filter-sync
+  name: test-selector-sync
 spec:
   sourceRef: test-source
   operator: mock
   transformers:
-    - name: filter-developers
-      type: filter
+    - name: selector-developers
+      type: selector
       config:
-        groupFilter: developers
+        groupSelector: developers
 `
 
 	parser := manifest.NewParser()
@@ -343,12 +343,12 @@ spec:
   sourceRef: test-source
   operator: mock
   transformers:
-    - name: filter-devs
-      type: filter
+    - name: selector-devs
+      type: selector
       config:
-        groupFilter: developers
+        groupSelector: developers
     - name: add-defaults
-      type: map
+      type: constant
       config:
         mappings:
           domain: example.com
@@ -442,22 +442,22 @@ spec:
   sourceRef: ldap-source
   operator: dovecot
   transformers:
-    - name: engineering-filter
-      type: filter
+    - name: engineering-selector
+      type: selector
       config:
-        groupFilter: engineering
+        groupSelector: engineering
     - name: email-defaults
-      type: map
+      type: constant
       config:
         mappings:
           domain: newcompany.com
           quota: 5368709120
           enabled: true
-          imap: true
+          iconstant: true
           pop3: false
           webmail: true
-          spamFilter: true
-          virusFilter: true
+          spamSelector: true
+          virusSelector: true
     - name: email-templates
       type: template
       config:
@@ -534,7 +534,7 @@ spec:
   operator: unix
   transformers:
     - name: unix-defaults
-      type: map
+      type: constant
       config:
         mappings:
           shell: /bin/bash
@@ -618,12 +618,12 @@ spec:
   sourceRef: user-db
   operator: saas-platform
   transformers:
-    - name: premium-filter
-      type: filter
+    - name: premium-selector
+      type: selector
       config:
-        groupFilter: premium-users
+        groupSelector: premium-users
     - name: premium-settings
-      type: map
+      type: constant
       config:
         mappings:
           maxProjects: 100
@@ -686,7 +686,7 @@ spec:
   operator: mock
   transformers:
     - name: add-domain
-      type: map
+      type: constant
       config:
         mappings:
           domain: example.com
@@ -772,7 +772,7 @@ spec:
   operator: dovecot
   transformers:
     - name: add-domain
-      type: map
+      type: constant
       config:
         mappings:
           domain: mail.example.com
@@ -787,7 +787,7 @@ spec:
   operator: unix
   transformers:
     - name: unix-defaults
-      type: map
+      type: constant
       config:
         mappings:
           shell: /bin/bash
@@ -843,7 +843,7 @@ spec:
   operator: mock
   transformers:
     - name: env-based-config
-      type: map
+      type: constant
       config:
         mappings:
           domain: ${EMAIL_DOMAIN}

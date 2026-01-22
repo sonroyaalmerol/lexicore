@@ -7,12 +7,12 @@ spec:
   operator: dovecot
   dryRun: false
   transformers:
-    - name: filter-mail-users
-      type: filter
+    - name: selector-mail-users
+      type: selector
       config:
-        groupFilter: cn=mail-users,ou=groups,dc=example,dc=com
-    - name: map-attributes
-      type: map
+        groupSelector: cn=mail-users,ou=groups,dc=example,dc=com
+    - name: constant-attributes
+      type: constant
       config:
         mappings:
           domain: example.com

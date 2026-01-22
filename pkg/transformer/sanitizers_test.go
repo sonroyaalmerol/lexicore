@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRegexRule_Apply(t *testing.T) {
-	rule := &RegexRule{
+func TestRegexSanitizer_Apply(t *testing.T) {
+	sanitizer := &RegexSanitizer{
 		field:   "username",
 		pattern: mustCompile(t, `^(.+)@.+$`),
 		replace: "$1",
@@ -20,12 +20,12 @@ func TestRegexRule_Apply(t *testing.T) {
 		Username: "user@example.com",
 	}
 
-	err := rule.Apply(&identity)
+	err := sanitizer.Apply(&identity)
 	require.NoError(t, err)
 	assert.Equal(t, "user", identity.Username)
 }
 
-func TestNormalizeRule_Apply(t *testing.T) {
+func TestNormalizeSanitizer_Apply(t *testing.T) {
 	tests := []struct {
 		name      string
 		operation string
@@ -54,7 +54,7 @@ func TestNormalizeRule_Apply(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rule := &NormalizeRule{
+			sanitizer := &NormalizeSanitizer{
 				field:     "email",
 				operation: tt.operation,
 			}
@@ -63,15 +63,15 @@ func TestNormalizeRule_Apply(t *testing.T) {
 				Email: tt.input,
 			}
 
-			err := rule.Apply(&identity)
+			err := sanitizer.Apply(&identity)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, identity.Email)
 		})
 	}
 }
 
-func TestComputeRule_Apply(t *testing.T) {
-	rule := &ComputeRule{
+func TestComputeSanitizer_Apply(t *testing.T) {
+	sanitizer := &ComputeSanitizer{
 		target:     "displayEmail",
 		expression: "{{username}}@example.com",
 	}
@@ -81,7 +81,7 @@ func TestComputeRule_Apply(t *testing.T) {
 		Attributes: make(map[string]any),
 	}
 
-	err := rule.Apply(&identity)
+	err := sanitizer.Apply(&identity)
 	require.NoError(t, err)
 	assert.Equal(t, "john@example.com", identity.Attributes["displayEmail"])
 }

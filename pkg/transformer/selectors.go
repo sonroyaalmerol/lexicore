@@ -6,16 +6,16 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
-type FilterTransformer struct {
-	groupFilter string
-	emailDomain string
+type SelectorTransformer struct {
+	groupSelector string
+	emailDomain     string
 }
 
-func NewFilterTransformer(config map[string]any) (*FilterTransformer, error) {
-	ft := &FilterTransformer{}
+func NewSelectorTransformer(config map[string]any) (*SelectorTransformer, error) {
+	ft := &SelectorTransformer{}
 
-	if gf, ok := config["groupFilter"].(string); ok {
-		ft.groupFilter = gf
+	if gf, ok := config["groupSelector"].(string); ok {
+		ft.groupSelector = gf
 	}
 
 	if ed, ok := config["emailDomain"].(string); ok {
@@ -25,7 +25,7 @@ func NewFilterTransformer(config map[string]any) (*FilterTransformer, error) {
 	return ft, nil
 }
 
-func (f *FilterTransformer) Transform(
+func (f *SelectorTransformer) Transform(
 	ctx *Context,
 	identities []source.Identity,
 	groups []source.Group,
@@ -41,9 +41,9 @@ func (f *FilterTransformer) Transform(
 	return filtered, groups, nil
 }
 
-func (f *FilterTransformer) shouldInclude(identity source.Identity) bool {
-	if f.groupFilter != "" {
-		hasGroup := slices.Contains(identity.Groups, f.groupFilter)
+func (f *SelectorTransformer) shouldInclude(identity source.Identity) bool {
+	if f.groupSelector != "" {
+		hasGroup := slices.Contains(identity.Groups, f.groupSelector)
 		if !hasGroup {
 			return false
 		}

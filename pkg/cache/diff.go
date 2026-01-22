@@ -28,17 +28,17 @@ func CalculateDiff(
 ) *Diff {
 	diff := &Diff{}
 
-	oldIdentityMap := make(map[string]source.Identity)
+	oldIdentityConstant := make(map[string]source.Identity)
 	for _, identity := range oldIdentities {
-		oldIdentityMap[identityKey(identity)] = identity
+		oldIdentityConstant[identityKey(identity)] = identity
 	}
 
-	newIdentityMap := make(map[string]source.Identity)
+	newIdentityConstant := make(map[string]source.Identity)
 	for _, identity := range newIdentities {
 		key := identityKey(identity)
-		newIdentityMap[key] = identity
+		newIdentityConstant[key] = identity
 
-		if oldIdentity, exists := oldIdentityMap[key]; exists {
+		if oldIdentity, exists := oldIdentityConstant[key]; exists {
 			if needsIdentityUpdate(oldIdentity, identity) {
 				diff.IdentitiesToUpdate = append(diff.IdentitiesToUpdate, identity)
 			}
@@ -48,22 +48,22 @@ func CalculateDiff(
 	}
 
 	for _, oldIdentity := range oldIdentities {
-		if _, exists := newIdentityMap[identityKey(oldIdentity)]; !exists {
+		if _, exists := newIdentityConstant[identityKey(oldIdentity)]; !exists {
 			diff.IdentitiesToDelete = append(diff.IdentitiesToDelete, oldIdentity)
 		}
 	}
 
-	oldGroupMap := make(map[string]source.Group)
+	oldGroupConstant := make(map[string]source.Group)
 	for _, group := range oldGroups {
-		oldGroupMap[groupKey(group)] = group
+		oldGroupConstant[groupKey(group)] = group
 	}
 
-	newGroupMap := make(map[string]source.Group)
+	newGroupConstant := make(map[string]source.Group)
 	for _, group := range newGroups {
 		key := groupKey(group)
-		newGroupMap[key] = group
+		newGroupConstant[key] = group
 
-		if oldGroup, exists := oldGroupMap[key]; exists {
+		if oldGroup, exists := oldGroupConstant[key]; exists {
 			if needsGroupUpdate(oldGroup, group) {
 				diff.GroupsToUpdate = append(diff.GroupsToUpdate, group)
 			}
@@ -73,7 +73,7 @@ func CalculateDiff(
 	}
 
 	for _, oldGroup := range oldGroups {
-		if _, exists := newGroupMap[groupKey(oldGroup)]; !exists {
+		if _, exists := newGroupConstant[groupKey(oldGroup)]; !exists {
 			diff.GroupsToDelete = append(diff.GroupsToDelete, oldGroup)
 		}
 	}

@@ -26,7 +26,7 @@ type SyncTargetSpec struct {
 
 type TransformerConfig struct {
 	Name   string         `json:"name"`
-	Type   string         `json:"type"` // filter, map, template
+	Type   string         `json:"type"` // selector, constant, template
 	Config map[string]any `json:"config"`
 }
 

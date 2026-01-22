@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFilterTransformer_GroupFilter(t *testing.T) {
+func TestSelectorTransformer_GroupSelector(t *testing.T) {
 	config := map[string]any{
-		"groupFilter": "admins",
+		"groupSelector": "admins",
 	}
 
-	ft, err := NewFilterTransformer(config)
+	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -33,10 +33,10 @@ func TestFilterTransformer_GroupFilter(t *testing.T) {
 	assert.Equal(t, "user3", filtered[1].Username)
 }
 
-func TestFilterTransformer_NoGroupFilter(t *testing.T) {
+func TestSelectorTransformer_NoGroupSelector(t *testing.T) {
 	config := map[string]any{}
 
-	ft, err := NewFilterTransformer(config)
+	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -51,12 +51,12 @@ func TestFilterTransformer_NoGroupFilter(t *testing.T) {
 	assert.Len(t, filtered, 2)
 }
 
-func TestFilterTransformer_EmptyGroups(t *testing.T) {
+func TestSelectorTransformer_EmptyGroups(t *testing.T) {
 	config := map[string]any{
-		"groupFilter": "admins",
+		"groupSelector": "admins",
 	}
 
-	ft, err := NewFilterTransformer(config)
+	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -71,12 +71,12 @@ func TestFilterTransformer_EmptyGroups(t *testing.T) {
 	assert.Len(t, filtered, 0)
 }
 
-func TestFilterTransformer_MultipleGroupsPerUser(t *testing.T) {
+func TestSelectorTransformer_MultipleGroupsPerUser(t *testing.T) {
 	config := map[string]any{
-		"groupFilter": "developers",
+		"groupSelector": "developers",
 	}
 
-	ft, err := NewFilterTransformer(config)
+	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -95,12 +95,12 @@ func TestFilterTransformer_MultipleGroupsPerUser(t *testing.T) {
 	assert.Equal(t, "user1", filtered[0].Username)
 }
 
-func TestFilterTransformer_EmailDomain(t *testing.T) {
+func TestSelectorTransformer_EmailDomain(t *testing.T) {
 	config := map[string]any{
 		"emailDomain": "example.com",
 	}
 
-	ft, err := NewFilterTransformer(config)
+	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
 	// Note: emailDomain filtering is not implemented yet
@@ -108,15 +108,15 @@ func TestFilterTransformer_EmailDomain(t *testing.T) {
 	assert.Equal(t, "example.com", ft.emailDomain)
 }
 
-func TestFilterTransformer_BothFilters(t *testing.T) {
+func TestSelectorTransformer_BothSelectors(t *testing.T) {
 	config := map[string]any{
-		"groupFilter": "admins",
-		"emailDomain": "example.com",
+		"groupSelector": "admins",
+		"emailDomain":   "example.com",
 	}
 
-	ft, err := NewFilterTransformer(config)
+	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
-	assert.Equal(t, "admins", ft.groupFilter)
+	assert.Equal(t, "admins", ft.groupSelector)
 	assert.Equal(t, "example.com", ft.emailDomain)
 }

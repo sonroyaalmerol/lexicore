@@ -6,13 +6,13 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
-type MapTransformer struct {
+type ConstantTransformer struct {
 	mappings map[string]string
 	defaults map[string]any
 }
 
-func NewMapTransformer(config map[string]any) (*MapTransformer, error) {
-	mt := &MapTransformer{
+func NewConstantTransformer(config map[string]any) (*ConstantTransformer, error) {
+	mt := &ConstantTransformer{
 		mappings: make(map[string]string),
 		defaults: make(map[string]any),
 	}
@@ -24,7 +24,7 @@ func NewMapTransformer(config map[string]any) (*MapTransformer, error) {
 	return mt, nil
 }
 
-func (m *MapTransformer) Transform(
+func (m *ConstantTransformer) Transform(
 	ctx *Context,
 	identities []source.Identity,
 	groups []source.Group,

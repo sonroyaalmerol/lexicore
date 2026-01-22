@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFilterTransformer_Transform(t *testing.T) {
+func TestSelectorTransformer_Transform(t *testing.T) {
 	config := map[string]any{
-		"groupFilter": "admins",
+		"groupSelector": "admins",
 	}
 
-	ft, err := NewFilterTransformer(config)
+	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -25,15 +25,15 @@ func TestFilterTransformer_Transform(t *testing.T) {
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	filtered, _, err := ft.Transform(ctx, identities, []source.Group{})
+	selectored, _, err := ft.Transform(ctx, identities, []source.Group{})
 
 	require.NoError(t, err)
-	assert.Len(t, filtered, 2)
-	assert.Equal(t, "user1", filtered[0].Username)
-	assert.Equal(t, "user3", filtered[1].Username)
+	assert.Len(t, selectored, 2)
+	assert.Equal(t, "user1", selectored[0].Username)
+	assert.Equal(t, "user3", selectored[1].Username)
 }
 
-func TestMapTransformer_Transform(t *testing.T) {
+func TestConstantTransformer_Transform(t *testing.T) {
 	config := map[string]any{
 		"mappings": map[string]any{
 			"domain":  "example.com",
@@ -41,7 +41,7 @@ func TestMapTransformer_Transform(t *testing.T) {
 		},
 	}
 
-	mt, err := NewMapTransformer(config)
+	mt, err := NewConstantTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -87,15 +87,15 @@ func TestTemplateTransformer_Transform(t *testing.T) {
 func TestPipeline_Execute(t *testing.T) {
 	configs := []manifest.TransformerConfig{
 		{
-			Name: "filter",
-			Type: "filter",
+			Name: "selector",
+			Type: "selector",
 			Config: map[string]any{
-				"groupFilter": "admins",
+				"groupSelector": "admins",
 			},
 		},
 		{
-			Name: "map",
-			Type: "map",
+			Name: "constant",
+			Type: "constant",
 			Config: map[string]any{
 				"mappings": map[string]any{
 					"domain": "example.com",

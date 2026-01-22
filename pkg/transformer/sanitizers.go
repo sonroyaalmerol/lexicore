@@ -8,44 +8,44 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
-type RuleTransformer struct {
-	rules []Rule
+type SanitizerTransformer struct {
+	sanitizers []Sanitizer
 }
 
-type Rule interface {
+type Sanitizer interface {
 	Apply(identity *source.Identity) error
 }
 
-func NewRuleTransformer(config map[string]any) (*RuleTransformer, error) {
-	rt := &RuleTransformer{}
+func NewSanitizerTransformer(config map[string]any) (*SanitizerTransformer, error) {
+	rt := &SanitizerTransformer{}
 
-	if rulesConfig, ok := config["rules"].([]any); ok {
-		for _, ruleConfig := range rulesConfig {
-			ruleMap, ok := ruleConfig.(map[string]any)
+	if sanitizersConfig, ok := config["sanitizers"].([]any); ok {
+		for _, sanitizerConfig := range sanitizersConfig {
+			sanitizerMap, ok := sanitizerConfig.(map[string]any)
 			if !ok {
 				continue
 			}
 
-			rule, err := parseRule(ruleMap)
+			sanitizer, err := parseSanitizer(sanitizerMap)
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse rule: %w", err)
+				return nil, fmt.Errorf("failed to parse sanitizer: %w", err)
 			}
-			rt.rules = append(rt.rules, rule)
+			rt.sanitizers = append(rt.sanitizers, sanitizer)
 		}
 	}
 
 	return rt, nil
 }
 
-func (r *RuleTransformer) Transform(
+func (r *SanitizerTransformer) Transform(
 	ctx *Context,
 	identities []source.Identity,
 	groups []source.Group,
 ) ([]source.Identity, []source.Group, error) {
 	for i := range identities {
-		for _, rule := range r.rules {
-			if err := rule.Apply(&identities[i]); err != nil {
-				return nil, nil, fmt.Errorf("rule application failed: %w", err)
+		for _, sanitizer := range r.sanitizers {
+			if err := sanitizer.Apply(&identities[i]); err != nil {
+				return nil, nil, fmt.Errorf("sanitizer application failed: %w", err)
 			}
 		}
 	}
@@ -53,31 +53,31 @@ func (r *RuleTransformer) Transform(
 	return identities, groups, nil
 }
 
-func parseRule(config map[string]any) (Rule, error) {
-	ruleType, ok := config["type"].(string)
+func parseSanitizer(config map[string]any) (Sanitizer, error) {
+	sanitizerType, ok := config["type"].(string)
 	if !ok {
-		return nil, fmt.Errorf("rule type not specified")
+		return nil, fmt.Errorf("sanitizer type not specified")
 	}
 
-	switch ruleType {
+	switch sanitizerType {
 	case "regex":
-		return parseRegexRule(config)
+		return parseRegexSanitizer(config)
 	case "normalize":
-		return parseNormalizeRule(config)
+		return parseNormalizeSanitizer(config)
 	case "compute":
-		return parseComputeRule(config)
+		return parseComputeSanitizer(config)
 	default:
-		return nil, fmt.Errorf("unknown rule type: %s", ruleType)
+		return nil, fmt.Errorf("unknown sanitizer type: %s", sanitizerType)
 	}
 }
 
-type RegexRule struct {
+type RegexSanitizer struct {
 	field   string
 	pattern *regexp.Regexp
 	replace string
 }
 
-func parseRegexRule(config map[string]any) (*RegexRule, error) {
+func parseRegexSanitizer(config map[string]any) (*RegexSanitizer, error) {
 	field, ok := config["field"].(string)
 	if !ok {
 		return nil, fmt.Errorf("field not specified")
@@ -95,14 +95,14 @@ func parseRegexRule(config map[string]any) (*RegexRule, error) {
 
 	replace, _ := config["replace"].(string)
 
-	return &RegexRule{
+	return &RegexSanitizer{
 		field:   field,
 		pattern: pattern,
 		replace: replace,
 	}, nil
 }
 
-func (r *RegexRule) Apply(identity *source.Identity) error {
+func (r *RegexSanitizer) Apply(identity *source.Identity) error {
 	var value string
 	switch r.field {
 	case "username":
@@ -131,12 +131,12 @@ func (r *RegexRule) Apply(identity *source.Identity) error {
 	return nil
 }
 
-type NormalizeRule struct {
+type NormalizeSanitizer struct {
 	field     string
 	operation string // lowercase, uppercase, trim
 }
 
-func parseNormalizeRule(config map[string]any) (*NormalizeRule, error) {
+func parseNormalizeSanitizer(config map[string]any) (*NormalizeSanitizer, error) {
 	field, ok := config["field"].(string)
 	if !ok {
 		return nil, fmt.Errorf("field not specified")
@@ -147,13 +147,13 @@ func parseNormalizeRule(config map[string]any) (*NormalizeRule, error) {
 		return nil, fmt.Errorf("operation not specified")
 	}
 
-	return &NormalizeRule{
+	return &NormalizeSanitizer{
 		field:     field,
 		operation: operation,
 	}, nil
 }
 
-func (r *NormalizeRule) Apply(identity *source.Identity) error {
+func (r *NormalizeSanitizer) Apply(identity *source.Identity) error {
 	var value string
 	switch r.field {
 	case "username":
@@ -192,12 +192,12 @@ func (r *NormalizeRule) Apply(identity *source.Identity) error {
 	return nil
 }
 
-type ComputeRule struct {
+type ComputeSanitizer struct {
 	target     string
 	expression string
 }
 
-func parseComputeRule(config map[string]any) (*ComputeRule, error) {
+func parseComputeSanitizer(config map[string]any) (*ComputeSanitizer, error) {
 	target, ok := config["target"].(string)
 	if !ok {
 		return nil, fmt.Errorf("target not specified")
@@ -208,20 +208,20 @@ func parseComputeRule(config map[string]any) (*ComputeRule, error) {
 		return nil, fmt.Errorf("expression not specified")
 	}
 
-	return &ComputeRule{
+	return &ComputeSanitizer{
 		target:     target,
 		expression: expression,
 	}, nil
 }
 
-func (r *ComputeRule) Apply(identity *source.Identity) error {
+func (r *ComputeSanitizer) Apply(identity *source.Identity) error {
 	// TODO: use a proper expression evaluator
 	result := r.evaluateExpression(identity, r.expression)
 	identity.Attributes[r.target] = result
 	return nil
 }
 
-func (r *ComputeRule) evaluateExpression(identity *source.Identity, expr string) string {
+func (r *ComputeSanitizer) evaluateExpression(identity *source.Identity, expr string) string {
 	// TODO: Replace {{field}} with actual values
 	result := expr
 	result = strings.ReplaceAll(result, "{{username}}", identity.Username)

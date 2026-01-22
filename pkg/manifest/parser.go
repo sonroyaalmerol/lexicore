@@ -36,9 +36,10 @@ func (p *Parser) ParseFile(path string) (any, error) {
 
 func (p *Parser) Parse(data []byte) (any, error) {
 	expanded := os.ExpandEnv(string(data))
+	expandedBytes := []byte(expanded)
 
 	var typeMeta metav1.TypeMeta
-	if err := yaml.Unmarshal([]byte(expanded), &typeMeta); err != nil {
+	if err := yaml.Unmarshal(expandedBytes, &typeMeta); err != nil {
 		return nil, fmt.Errorf("failed to parse type metadata: %w", err)
 	}
 
@@ -49,17 +50,17 @@ func (p *Parser) Parse(data []byte) (any, error) {
 	var manifest any
 	switch typeMeta.Kind {
 	case "IdentitySource":
-		var source IdentitySource
-		if err := yaml.Unmarshal([]byte(expanded), &source); err != nil {
+		source := &IdentitySource{}
+		if err := yaml.Unmarshal(expandedBytes, source); err != nil {
 			return nil, fmt.Errorf("failed to parse IdentitySource: %w", err)
 		}
-		manifest = &source
+		manifest = source
 	case "SyncTarget":
-		var target SyncTarget
-		if err := yaml.Unmarshal([]byte(expanded), &target); err != nil {
+		target := &SyncTarget{}
+		if err := yaml.Unmarshal(expandedBytes, target); err != nil {
 			return nil, fmt.Errorf("failed to parse SyncTarget: %w", err)
 		}
-		manifest = &target
+		manifest = target
 	default:
 		return nil, fmt.Errorf("unknown manifest kind: %s", typeMeta.Kind)
 	}
@@ -88,15 +89,18 @@ func (p *Parser) validateAPIVersion(apiVersion string) error {
 }
 
 func (p *Parser) ParseDirectory(dir string) ([]any, error) {
-	var manifests []any
+	manifests := make([]any, 0, 16)
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if info.IsDir() || (!strings.HasSuffix(path, ".yaml") &&
-			!strings.HasSuffix(path, ".yml")) {
+		if info.IsDir() {
+			return nil
+		}
+
+		if !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
 			return nil
 		}
 

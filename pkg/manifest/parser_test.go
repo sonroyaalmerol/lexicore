@@ -47,10 +47,10 @@ spec:
   operator: dovecot
   dryRun: false
   transformers:
-    - name: filter
-      type: filter
+    - name: selector
+      type: selector
       config:
-        groupFilter: admins
+        groupSelector: admins
   config:
     dsn: postgres://localhost/db
 `
@@ -244,7 +244,7 @@ spec:
   operator: mock
   transformers:
     - name: test
-      type: map
+      type: constant
       config:
         mappings:
           domain: ${TEST_DOMAIN}

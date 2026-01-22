@@ -10,8 +10,8 @@ spec:
     bindDN: cn=readonly,dc=example,dc=com
     bindPassword: ${LDAP_PASSWORD}
     baseDN: dc=example,dc=com
-    userFilter: (objectClass=inetOrgPerson)
-    groupFilter: (objectClass=groupOfNames)
+    userSelector: (objectClass=inetOrgPerson)
+    groupSelector: (objectClass=groupOfNames)
     userAttributes:
       - uid
       - cn

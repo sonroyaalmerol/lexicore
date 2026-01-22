@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMapTransformer_WithDefaults(t *testing.T) {
+func TestConstantTransformer_WithDefaults(t *testing.T) {
 	config := map[string]any{
 		"mappings": map[string]any{
 			"domain":  "example.com",
@@ -18,7 +18,7 @@ func TestMapTransformer_WithDefaults(t *testing.T) {
 		},
 	}
 
-	mt, err := NewMapTransformer(config)
+	mt, err := NewConstantTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -37,14 +37,14 @@ func TestMapTransformer_WithDefaults(t *testing.T) {
 	assert.Equal(t, 1000, transformed[0].Attributes["quota"])
 }
 
-func TestMapTransformer_OverwriteExisting(t *testing.T) {
+func TestConstantTransformer_OverwriteExisting(t *testing.T) {
 	config := map[string]any{
 		"mappings": map[string]any{
 			"domain": "newdomain.com",
 		},
 	}
 
-	mt, err := NewMapTransformer(config)
+	mt, err := NewConstantTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -63,10 +63,10 @@ func TestMapTransformer_OverwriteExisting(t *testing.T) {
 	assert.Equal(t, "newdomain.com", transformed[0].Attributes["domain"])
 }
 
-func TestMapTransformer_EmptyConfig(t *testing.T) {
+func TestConstantTransformer_EmptyConfig(t *testing.T) {
 	config := map[string]any{}
 
-	mt, err := NewMapTransformer(config)
+	mt, err := NewConstantTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -85,14 +85,14 @@ func TestMapTransformer_EmptyConfig(t *testing.T) {
 	assert.Equal(t, "value", transformed[0].Attributes["existing"])
 }
 
-func TestMapTransformer_NilAttributes(t *testing.T) {
+func TestConstantTransformer_NilAttributes(t *testing.T) {
 	config := map[string]any{
 		"mappings": map[string]any{
 			"domain": "example.com",
 		},
 	}
 
-	mt, err := NewMapTransformer(config)
+	mt, err := NewConstantTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{
@@ -110,14 +110,14 @@ func TestMapTransformer_NilAttributes(t *testing.T) {
 	assert.Equal(t, "example.com", transformed[0].Attributes["domain"])
 }
 
-func TestMapTransformer_MultipleIdentities(t *testing.T) {
+func TestConstantTransformer_MultipleIdentities(t *testing.T) {
 	config := map[string]any{
 		"mappings": map[string]any{
 			"domain": "example.com",
 		},
 	}
 
-	mt, err := NewMapTransformer(config)
+	mt, err := NewConstantTransformer(config)
 	require.NoError(t, err)
 
 	identities := []source.Identity{

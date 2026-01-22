@@ -58,7 +58,7 @@ func NewMapper(config *MapperConfig) *Mapper {
 	return &Mapper{config: config}
 }
 
-func (m *Mapper) MapIdentity(entry *ldap.Entry) source.Identity {
+func (m *Mapper) ConstantIdentity(entry *ldap.Entry) source.Identity {
 	identity := source.Identity{
 		UID:         m.getAttributeValue(entry, m.config.UIDAttribute),
 		Username:    m.getAttributeValue(entry, m.config.UsernameAttribute),
@@ -94,7 +94,7 @@ func (m *Mapper) MapIdentity(entry *ldap.Entry) source.Identity {
 	return identity
 }
 
-func (m *Mapper) MapGroup(entry *ldap.Entry) source.Group {
+func (m *Mapper) ConstantGroup(entry *ldap.Entry) source.Group {
 	group := source.Group{
 		GID:         m.getAttributeValue(entry, m.config.GIDAttribute),
 		Name:        m.getAttributeValue(entry, m.config.GroupNameAttribute),

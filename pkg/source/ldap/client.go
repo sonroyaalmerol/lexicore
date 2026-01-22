@@ -13,8 +13,8 @@ type Config struct {
 	BindDN          string
 	BindPassword    string
 	BaseDN          string
-	UserFilter      string
-	GroupFilter     string
+	UserSelector  string
+	GroupSelector string
 	UserAttributes  []string
 	GroupAttributes []string
 	TLSConfig       *TLSConfig
@@ -65,7 +65,7 @@ func (l *LDAPSource) GetIdentities(ctx context.Context) ([]source.Identity, erro
 		0,
 		0,
 		false,
-		l.config.UserFilter,
+		l.config.UserSelector,
 		l.config.UserAttributes,
 		nil,
 	)
@@ -107,7 +107,7 @@ func (l *LDAPSource) GetGroups(ctx context.Context) ([]source.Group, error) {
 		0,
 		0,
 		false,
-		l.config.GroupFilter,
+		l.config.GroupSelector,
 		l.config.GroupAttributes,
 		nil,
 	)
