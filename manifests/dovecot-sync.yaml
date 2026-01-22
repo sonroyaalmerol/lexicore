@@ -1,0 +1,22 @@
+apiVersion: identity.orchestrator.io/v1
+kind: SyncTarget
+metadata:
+  name: dovecot-mail
+spec:
+  sourceRef: corporate-ldap
+  operator: dovecot
+  dryRun: false
+  transformers:
+    - name: filter-mail-users
+      type: filter
+      config:
+        groupFilter: cn=mail-users,ou=groups,dc=example,dc=com
+    - name: map-attributes
+      type: map
+      config:
+        mappings:
+          domain: example.com
+          maildir: /var/mail/%u
+  config:
+    dsn: postgres://dovecot:password@localhost/dovecot?sslmode=disable
+    schema: public

@@ -1,0 +1,26 @@
+apiVersion: identity.orchestrator.io/v1
+kind: IdentitySource
+metadata:
+  name: corporate-ldap
+spec:
+  type: ldap
+  syncPeriod: 5m
+  config:
+    url: ldap://ldap.example.com:389
+    bindDN: cn=readonly,dc=example,dc=com
+    bindPassword: ${LDAP_PASSWORD}
+    baseDN: dc=example,dc=com
+    userFilter: (objectClass=inetOrgPerson)
+    groupFilter: (objectClass=groupOfNames)
+    userAttributes:
+      - uid
+      - cn
+      - mail
+      - memberOf
+    groupAttributes:
+      - cn
+      - member
+      - description
+    tls:
+      enabled: true
+      insecureSkipVerify: false
