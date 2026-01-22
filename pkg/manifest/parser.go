@@ -6,8 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/goccy/go-yaml"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+const (
+	SupportedAPIVersion = "lexicore.io/v1"
 )
 
 type Parser struct {
@@ -37,6 +42,10 @@ func (p *Parser) Parse(data []byte) (any, error) {
 		return nil, fmt.Errorf("failed to parse type metadata: %w", err)
 	}
 
+	if err := p.validateAPIVersion(typeMeta.APIVersion); err != nil {
+		return nil, err
+	}
+
 	var manifest any
 	switch typeMeta.Kind {
 	case "IdentitySource":
@@ -60,6 +69,22 @@ func (p *Parser) Parse(data []byte) (any, error) {
 	}
 
 	return manifest, nil
+}
+
+func (p *Parser) validateAPIVersion(apiVersion string) error {
+	if apiVersion == "" {
+		return fmt.Errorf("apiVersion is required")
+	}
+
+	if apiVersion != SupportedAPIVersion {
+		return fmt.Errorf(
+			"unsupported apiVersion: %s (supported: %s)",
+			apiVersion,
+			SupportedAPIVersion,
+		)
+	}
+
+	return nil
 }
 
 func (p *Parser) ParseDirectory(dir string) ([]any, error) {

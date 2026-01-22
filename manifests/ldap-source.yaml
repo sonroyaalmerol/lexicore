@@ -1,4 +1,4 @@
-apiVersion: identity.orchestrator.io/v1
+apiVersion: lexicore.io/v1
 kind: IdentitySource
 metadata:
   name: corporate-ldap

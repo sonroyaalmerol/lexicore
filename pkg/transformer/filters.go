@@ -1,6 +1,10 @@
 package transformer
 
-import "codeberg.org/lexicore/lexicore/pkg/source"
+import (
+	"slices"
+
+	"codeberg.org/lexicore/lexicore/pkg/source"
+)
 
 type FilterTransformer struct {
 	groupFilter string
@@ -39,13 +43,7 @@ func (f *FilterTransformer) Transform(
 
 func (f *FilterTransformer) shouldInclude(identity source.Identity) bool {
 	if f.groupFilter != "" {
-		hasGroup := false
-		for _, group := range identity.Groups {
-			if group == f.groupFilter {
-				hasGroup = true
-				break
-			}
-		}
+		hasGroup := slices.Contains(identity.Groups, f.groupFilter)
 		if !hasGroup {
 			return false
 		}

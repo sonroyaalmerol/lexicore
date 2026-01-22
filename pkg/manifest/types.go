@@ -5,42 +5,42 @@ import (
 )
 
 type IdentitySourceSpec struct {
-	Type       string         `yaml:"type" json:"type"` // ldap, okta, etc.
-	Config     map[string]any `yaml:"config" json:"config"`
-	SyncPeriod string         `yaml:"syncPeriod" json:"syncPeriod"`
+	Type       string         `json:"type"` // ldap, okta, etc.
+	Config     map[string]any `json:"config"`
+	SyncPeriod string         `json:"syncPeriod"`
 }
 
 type IdentitySource struct {
-	metav1.TypeMeta   `yaml:",inline"`
-	metav1.ObjectMeta `yaml:"metadata"`
-	Spec              IdentitySourceSpec `yaml:"spec"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+	Spec              IdentitySourceSpec `json:"spec"`
 }
 
 type SyncTargetSpec struct {
-	SourceRef    string              `yaml:"sourceRef" json:"sourceRef"`
-	Operator     string              `yaml:"operator" json:"operator"`
-	Transformers []TransformerConfig `yaml:"transformers" json:"transformers"`
-	Config       map[string]any      `yaml:"config" json:"config"`
-	DryRun       bool                `yaml:"dryRun" json:"dryRun"`
+	SourceRef    string              `json:"sourceRef"`
+	Operator     string              `json:"operator"`
+	Transformers []TransformerConfig `json:"transformers"`
+	Config       map[string]any      `json:"config"`
+	DryRun       bool                `json:"dryRun"`
 }
 
 type TransformerConfig struct {
-	Name   string         `yaml:"name" json:"name"`
-	Type   string         `yaml:"type" json:"type"` // filter, map, template
-	Config map[string]any `yaml:"config" json:"config"`
+	Name   string         `json:"name"`
+	Type   string         `json:"type"` // filter, map, template
+	Config map[string]any `json:"config"`
 }
 
 type SyncTarget struct {
-	metav1.TypeMeta   `yaml:",inline"`
-	metav1.ObjectMeta `yaml:"metadata"`
-	Spec              SyncTargetSpec   `yaml:"spec"`
-	Status            SyncTargetStatus `yaml:"status,omitempty"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata"`
+	Spec              SyncTargetSpec   `json:"spec"`
+	Status            SyncTargetStatus `json:"status"`
 }
 
 type SyncTargetStatus struct {
-	LastSync      metav1.Time `yaml:"lastSync" json:"lastSync"`
-	Status        string      `yaml:"status" json:"status"`
-	Message       string      `yaml:"message" json:"message"`
-	IdentityCount int         `yaml:"identityCount" json:"identityCount"`
-	GroupCount    int         `yaml:"groupCount" json:"groupCount"`
+	LastSync      metav1.Time `json:"lastSync"`
+	Status        string      `json:"status"`
+	Message       string      `json:"message"`
+	IdentityCount int         `json:"identityCount"`
+	GroupCount    int         `json:"groupCount"`
 }

@@ -4,9 +4,9 @@ go 1.25.5
 
 require (
 	github.com/go-ldap/ldap/v3 v3.4.12
+	github.com/goccy/go-yaml v1.19.2
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
-	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/apimachinery v0.35.0
 )
 
@@ -28,6 +28,7 @@ require (
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect

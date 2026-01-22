@@ -19,6 +19,10 @@ func TestValidator_ValidateIdentitySource(t *testing.T) {
 		{
 			name: "valid source",
 			source: &IdentitySource{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "IdentitySource",
+				},
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
 				Spec: IdentitySourceSpec{
 					Type:       "ldap",
@@ -36,6 +40,10 @@ func TestValidator_ValidateIdentitySource(t *testing.T) {
 		{
 			name: "missing name",
 			source: &IdentitySource{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "IdentitySource",
+				},
 				Spec: IdentitySourceSpec{
 					Type: "ldap",
 				},
@@ -46,6 +54,10 @@ func TestValidator_ValidateIdentitySource(t *testing.T) {
 		{
 			name: "missing type",
 			source: &IdentitySource{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "IdentitySource",
+				},
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
 				Spec:       IdentitySourceSpec{},
 			},
@@ -55,6 +67,10 @@ func TestValidator_ValidateIdentitySource(t *testing.T) {
 		{
 			name: "invalid sync period",
 			source: &IdentitySource{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "IdentitySource",
+				},
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
 				Spec: IdentitySourceSpec{
 					Type:       "ldap",
@@ -93,6 +109,10 @@ func TestValidator_ValidateSyncTarget(t *testing.T) {
 		{
 			name: "valid target",
 			target: &SyncTarget{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "SyncTarget",
+				},
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
 				Spec: SyncTargetSpec{
 					SourceRef: "test-source",
@@ -104,6 +124,10 @@ func TestValidator_ValidateSyncTarget(t *testing.T) {
 		{
 			name: "missing sourceRef",
 			target: &SyncTarget{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "SyncTarget",
+				},
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
 				Spec: SyncTargetSpec{
 					Operator: "dovecot",
@@ -115,6 +139,10 @@ func TestValidator_ValidateSyncTarget(t *testing.T) {
 		{
 			name: "missing operator",
 			target: &SyncTarget{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "SyncTarget",
+				},
 				ObjectMeta: metav1.ObjectMeta{Name: "test"},
 				Spec: SyncTargetSpec{
 					SourceRef: "test-source",

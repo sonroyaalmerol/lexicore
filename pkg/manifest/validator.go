@@ -23,6 +23,14 @@ func (v *Validator) Validate(manifest any) error {
 }
 
 func (v *Validator) validateIdentitySource(source *IdentitySource) error {
+	if err := v.validateAPIVersion(source.APIVersion); err != nil {
+		return err
+	}
+
+	if source.Kind != "IdentitySource" {
+		return fmt.Errorf("kind must be IdentitySource, got: %s", source.Kind)
+	}
+
 	if source.Name == "" {
 		return fmt.Errorf("metadata.name is required")
 	}
@@ -56,6 +64,15 @@ func (v *Validator) validateLDAPConfig(config map[string]any) error {
 }
 
 func (v *Validator) validateSyncTarget(target *SyncTarget) error {
+	// Validate API version
+	if err := v.validateAPIVersion(target.APIVersion); err != nil {
+		return err
+	}
+
+	if target.Kind != "SyncTarget" {
+		return fmt.Errorf("kind must be SyncTarget, got: %s", target.Kind)
+	}
+
 	if target.Name == "" {
 		return fmt.Errorf("metadata.name is required")
 	}
@@ -72,6 +89,22 @@ func (v *Validator) validateSyncTarget(target *SyncTarget) error {
 		if err := v.validateTransformer(&transformer); err != nil {
 			return fmt.Errorf("transformer[%d] invalid: %w", i, err)
 		}
+	}
+
+	return nil
+}
+
+func (v *Validator) validateAPIVersion(apiVersion string) error {
+	if apiVersion == "" {
+		return fmt.Errorf("apiVersion is required")
+	}
+
+	if apiVersion != SupportedAPIVersion {
+		return fmt.Errorf(
+			"unsupported apiVersion: %s (supported: %s)",
+			apiVersion,
+			SupportedAPIVersion,
+		)
 	}
 
 	return nil
