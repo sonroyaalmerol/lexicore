@@ -81,72 +81,6 @@ spec:
 	assert.Equal(t, 1, target.Status.IdentityCount) // Only alice (selectored by group)
 }
 
-func TestConstantTransformer_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
-
-	logger, _ := zap.NewDevelopment()
-
-	src := &mockSource{
-		identities: []source.Identity{
-			{
-				UID:        "1",
-				Username:   "alice",
-				Email:      "alice@company.com",
-				Attributes: make(map[string]any),
-			},
-			{
-				UID:        "2",
-				Username:   "bob",
-				Email:      "bob@company.com",
-				Attributes: make(map[string]any),
-			},
-		},
-	}
-
-	op := newMockOperator()
-
-	manifestYAML := `
-apiVersion: lexicore.io/v1
-kind: SyncTarget
-metadata:
-  name: test-constant-sync
-spec:
-  sourceRef: test-source
-  operator: mock
-  transformers:
-    - name: constant-defaults
-      type: constant
-      config:
-        mappings:
-          domain: example.com
-          organization: ACME Corp
-          quota: 5000
-          enabled: true
-`
-
-	parser := manifest.NewParser()
-	parsed, err := parser.Parse([]byte(manifestYAML))
-	require.NoError(t, err)
-
-	target, ok := parsed.(*manifest.SyncTarget)
-	require.True(t, ok)
-
-	reconciler, err := controller.NewReconciler(target, src, op, logger)
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	err = reconciler.Reconcile(ctx)
-	require.NoError(t, err)
-
-	assert.True(t, op.syncCalled)
-	assert.Equal(t, "Success", target.Status.Status)
-	assert.Equal(t, 2, target.Status.IdentityCount)
-}
-
 func TestTemplateTransformer_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test")
@@ -348,7 +282,7 @@ spec:
       config:
         groupSelector: developers
     - name: add-defaults
-      type: constant
+      type: template
       config:
         mappings:
           domain: example.com
@@ -447,13 +381,13 @@ spec:
       config:
         groupSelector: engineering
     - name: email-defaults
-      type: constant
+      type: template
       config:
         mappings:
           domain: newcompany.com
           quota: 5368709120
           enabled: true
-          iconstant: true
+          imap: true
           pop3: false
           webmail: true
           spamSelector: true
@@ -534,7 +468,7 @@ spec:
   operator: unix
   transformers:
     - name: unix-defaults
-      type: constant
+      type: template
       config:
         mappings:
           shell: /bin/bash
@@ -623,7 +557,7 @@ spec:
       config:
         groupSelector: premium-users
     - name: premium-settings
-      type: constant
+      type: template
       config:
         mappings:
           maxProjects: 100
@@ -686,7 +620,7 @@ spec:
   operator: mock
   transformers:
     - name: add-domain
-      type: constant
+      type: template
       config:
         mappings:
           domain: example.com
@@ -772,7 +706,7 @@ spec:
   operator: dovecot
   transformers:
     - name: add-domain
-      type: constant
+      type: template
       config:
         mappings:
           domain: mail.example.com
@@ -787,7 +721,7 @@ spec:
   operator: unix
   transformers:
     - name: unix-defaults
-      type: constant
+      type: template
       config:
         mappings:
           shell: /bin/bash
@@ -843,7 +777,7 @@ spec:
   operator: mock
   transformers:
     - name: env-based-config
-      type: constant
+      type: template
       config:
         mappings:
           domain: ${EMAIL_DOMAIN}

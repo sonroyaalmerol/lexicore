@@ -3,9 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
+	"codeberg.org/lexicore/lexicore/pkg/config"
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -14,21 +14,47 @@ import (
 )
 
 type Manager struct {
-	sources     *xsync.Map[string, source.Source]
-	operators   *xsync.Map[string, operator.Operator]
-	syncTargets *xsync.Map[string, *manifest.SyncTarget]
-	reconcilers *xsync.Map[string, *Reconciler]
-	logger      *zap.Logger
+	sources         *xsync.Map[string, source.Source]
+	operators       *xsync.Map[string, operator.Operator]
+	syncTargets     *xsync.Map[string, *manifest.SyncTarget]
+	identitySources *xsync.Map[string, *manifest.IdentitySource]
+	reconcilers     *xsync.Map[string, *Reconciler]
+	cfg             *config.Config
+	logger          *zap.Logger
 }
 
-func NewManager(logger *zap.Logger) *Manager {
+func NewManager(cfg *config.Config, logger *zap.Logger) *Manager {
 	return &Manager{
-		sources:     xsync.NewMap[string, source.Source](),
-		operators:   xsync.NewMap[string, operator.Operator](),
-		syncTargets: xsync.NewMap[string, *manifest.SyncTarget](),
-		reconcilers: xsync.NewMap[string, *Reconciler](),
-		logger:      logger,
+		sources:         xsync.NewMap[string, source.Source](),
+		operators:       xsync.NewMap[string, operator.Operator](),
+		syncTargets:     xsync.NewMap[string, *manifest.SyncTarget](),
+		identitySources: xsync.NewMap[string, *manifest.IdentitySource](),
+		reconcilers:     xsync.NewMap[string, *Reconciler](),
+		cfg:             cfg,
+		logger:          logger,
 	}
+}
+
+func (m *Manager) GetIdentitySources() []manifest.IdentitySource {
+	sources := make([]manifest.IdentitySource, 0, m.sources.Size())
+
+	m.identitySources.Range(func(_ string, value *manifest.IdentitySource) bool {
+		sources = append(sources, *value)
+		return true
+	})
+
+	return sources
+}
+
+func (m *Manager) GetSyncTargets() []manifest.SyncTarget {
+	targets := make([]manifest.SyncTarget, 0, m.sources.Size())
+
+	m.syncTargets.Range(func(_ string, value *manifest.SyncTarget) bool {
+		targets = append(targets, *value)
+		return true
+	})
+
+	return targets
 }
 
 func (m *Manager) RegisterSource(name string, src source.Source) {
@@ -43,6 +69,15 @@ func (m *Manager) RegisterOperator(op operator.Operator) {
 	if ok {
 		_ = old.Close()
 	}
+}
+
+func (m *Manager) AddIdentitySource(source *manifest.IdentitySource) error {
+	if _, ok := m.sources.Load(source.Name); !ok {
+		return fmt.Errorf("source %s not found", source.Name)
+	}
+
+	m.identitySources.Store(source.Name, source)
+	return nil
 }
 
 func (m *Manager) createReconciler(target *manifest.SyncTarget) error {
@@ -82,60 +117,49 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 }
 
 func (m *Manager) Start(ctx context.Context) error {
-	m.logger.Info("Starting controller manager")
+	m.logger.Info("Starting controller manager",
+		zap.Int("workers", m.cfg.Workers.ReconcileWorkers))
 
-	var wg sync.WaitGroup
+	queue := make(chan string, m.cfg.Workers.QueueSize)
+
+	for i := 0; i < m.cfg.Workers.ReconcileWorkers; i++ {
+		go func(workerID int) {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case targetName := <-queue:
+					if target, ok := m.syncTargets.Load(targetName); ok {
+						m.reconcile(ctx, target)
+					}
+				}
+			}
+		}(i)
+	}
+
 	m.syncTargets.Range(func(name string, target *manifest.SyncTarget) bool {
-		err := m.createReconciler(target)
-		if err != nil {
-			m.logger.Error("Failed to create reconciler",
-				zap.String("target", name),
-				zap.Error(err))
-			return false
-		}
+		m.createReconciler(target)
 
-		wg.Add(1)
-		go func(name string, target *manifest.SyncTarget) {
-			defer wg.Done()
-			m.runReconcileLoop(ctx, name, target)
-		}(name, target)
+		go func(n string) {
+			ticker := time.NewTicker(m.cfg.DefaultSyncPeriod)
+			defer ticker.Stop()
 
+			queue <- n
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					queue <- n
+				}
+			}
+		}(name)
 		return true
 	})
 
-	wg.Wait()
+	<-ctx.Done()
 	return nil
-}
-
-func (m *Manager) runReconcileLoop(
-	ctx context.Context,
-	name string,
-	target *manifest.SyncTarget,
-) {
-	syncPeriod := 5 * time.Minute
-	ticker := time.NewTicker(syncPeriod)
-	defer ticker.Stop()
-
-	m.logger.Info("Starting reconcile loop", zap.String("target", name))
-
-	if err := m.reconcile(ctx, target); err != nil {
-		m.logger.Error("Reconciliation failed",
-			zap.String("target", name),
-			zap.Error(err))
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := m.reconcile(ctx, target); err != nil {
-				m.logger.Error("Reconciliation failed",
-					zap.String("target", name),
-					zap.Error(err))
-			}
-		}
-	}
 }
 
 func (m *Manager) reconcile(
@@ -159,4 +183,18 @@ func (m *Manager) reconcile(
 	}
 
 	return nil
+}
+
+func (m *Manager) RemoveIdentitySource(name string) {
+	m.identitySources.Delete(name)
+	if src, ok := m.sources.LoadAndDelete(name); ok {
+		m.logger.Info("Closing identity source driver", zap.String("name", name))
+		_ = src.Close()
+	}
+}
+
+func (m *Manager) RemoveSyncTarget(name string) {
+	m.syncTargets.Delete(name)
+	m.reconcilers.Delete(name)
+	m.logger.Info("Removed SyncTarget from active reconciliation", zap.String("name", name))
 }

@@ -2,61 +2,133 @@
 
 Lexicore is an extensible identity orchestration engine that treats **Identity as Code**. Built on a state-based reconciliation loop, Lexicore synchronizes identities from various sources to downstream service providers, ensuring your infrastructure reflects your central identity provider's state.
 
-By using declarative YAML manifests, Lexicore allows you to define complex selection, mapping, and templating logic to provision accounts across disparate systems like mail servers, Unix systems, and SaaS platforms.
+By using declarative YAML manifests and a Kubernetes-style API, Lexicore allows you to define complex selection, mapping, and templating logic to provision accounts across disparate systems like mail servers, Unix systems, and SaaS platforms.
 
 ## Key Features
 
-- **Declarative YAML Manifests**: Define `IdentitySource` and `SyncTarget` using a Kubernetes-style syntax.
+- **Kubernetes-style API**: Manage resources using `lexictl` or direct REST calls.
+- **Embedded HA Storage**: Ships with an integrated etcd server for persistent state and high availability without external dependencies.
+- **Declarative YAML Manifests**: Define `IdentitySource` and `SyncTarget` resources.
 - **Transformation Pipeline**: 
   - **Selector**: Inclusion/Exclusion based on groups or attributes.
-  - **Constant**: Inject static defaults (quotas, domains, shell paths).
-  - **Sanitizer**: Perform fine-grained manipulation on individual identity fields (Username, Email, etc.).
-  - **Template**: Generate dynamic attributes using Go templating (e.g., `homeDir: "/home/{{.Username}}"`).
-- **State-Based Reconciliation**: Calculates diffs (Create/Update/Delete) between source and target to minimize unnecessary operations.
-- **Dry-Run Support**: Validate synchronization logic without modifying downstream systems.
-- **Environment Variable Expansion**: Inject secrets and dynamic configs into manifests at runtime.
-- **Extensible Architecture**: Pluggable Source and Operator drivers.
+  - **Sanitizer**: Fine-grained manipulation (Regex, Lowercase, Trim).
+  - **Template**: Generate dynamic attributes using Go templating.
+- **Worker Pool Architecture**: Scalable reconciliation using configurable worker counts and internal queuing.
 
 ---
 
 ## Architecture
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                     Orchestrator Core                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │  Controller  │  │  Reconciler  │  │  Transformer │      │
-│  │   Manager    │──│    Loop      │──│   Pipeline   │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└─────────────────────────────────────────────────────────────┘
-         │                    │                    │
-         ▼                    ▼                    ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│  Source Driver  │  │   Manifest CRD  │  │ Operator Driver │
-│     (LDAP)      │  │    Processor    │  │    Registry     │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
-         │                                          │
-         ▼                                          ▼
-┌─────────────────┐                        ┌─────────────────┐
-│  LDAP (RO)      │                        │   Operators:    │
-│  Source of      │                        │  - Dovecot      │
-│  Truth          │                        │  - AD           │
-│                 │                        │  - PostgreSQL   │
-└─────────────────┘                        │  - etc.         │
-                                           └─────────────────┘
-```
-
-Lexicore operates as a central controller manager:
-1. **Source Drivers** (e.g., LDAP) fetch raw identity data.
-2. **Transformer Pipelines** process, selector, and enrich the data.
-3. **Reconciler** compares the desired state with the current state in the cache.
-4. **Operator Drivers** (e.g., Dovecot, Unix, SaaS) execute the necessary changes to reach the desired state.
+Lexicore operates as a distributed controller manager:
+1. **API Server**: Receives manifests and persists them to the **etcd Store**.
+2. **Controller Manager**: Watches the store and hydrates a worker pool.
+3. **Source Drivers**: Fetch raw identity data from providers (e.g., LDAP).
+4. **Transformer Pipeline**: Processes, filters, and enriches data in memory.
+5. **Operator Drivers**: Execute changes on downstream services (e.g., Dovecot, Unix).
 
 ---
 
-### Configuration Example
+## System Configuration
 
-#### 1. Identity Source
+Lexicore uses a structured `config.yaml` file to manage its runtime environment. This file is loaded at startup via the `--config` flag.
+
+```yaml
+# API Server settings
+server:
+  address: ":8080"           # The host:port the REST API will bind to
+  healthCheck: true         # Enables the /healthz endpoint
+  metrics: true              # Enables the /metrics endpoint (Prometheus)
+
+# Observability and Logs
+logging:
+  level: "info"              # Options: debug, info, warn, error
+  format: "console"          # Options: console (human-readable), json (structured)
+  output: "stdout"           # Path to log file or "stdout"/"stderr"
+
+# Metrics Exporter
+metrics:
+  enabled: true
+  port: 9090                 # Port for the dedicated metrics server
+  path: "/metrics"           # Path for Prometheus scraping
+
+# Persistence Layer (etcd)
+etcd:
+  # Endpoints: If provided, Lexicore connects to an external cluster.
+  # If empty [], Lexicore starts an internal Embedded HA instance.
+  endpoints: []              
+  dataDir: "lexicore.etcd"   # Storage path for embedded data
+  name: "node-1"             # Unique name for this node in the cluster
+  clientAddr: "http://localhost:2379" # API communication address
+  peerAddr: "http://localhost:2380"   # Node-to-node Raft communication
+  # Definition of all nodes in the HA cluster
+  initialCluster: "node-1=http://localhost:2380"
+
+# Performance and Concurrency
+workers:
+  reconcileWorkers: 4        # Concurrent reconciliation threads
+  queueSize: 100             # Internal buffer for pending sync tasks
+
+defaultSyncPeriod: 5m        # Interval between scheduled sync cycles
+```
+
+### Configuration Details
+
+| Section | Key | Description |
+| :--- | :--- | :--- |
+| **server** | `address` | Defines the entry point for `lexictl` and external integrations. |
+| **logging** | `level` | Set to `debug` for detailed reconciliation logs, including diff calculations. |
+| **etcd** | `endpoints` | Providing a list of IPs here disables the internal etcd and switches to "External Mode." |
+| **etcd** | `initialCluster` | To form an HA cluster, list all members here: `n1=http://...:2380,n2=http://...:2380`. |
+| **workers** | `reconcileWorkers` | Controls how many SyncTargets can be processed simultaneously. Increase this if you have hundreds of targets. |
+| **workers** | `queueSize` | Prevents system overload by buffering requests during high-frequency changes. |
+| `defaultSyncPeriod` | - | The "heartbeat" of the system. Even if no changes are detected via API, the system re-verifies all targets at this interval. |
+
+---
+
+## Deployment Modes
+
+### 1. Single-Node (Embedded)
+Ideal for small environments or localized identity management.
+- Set `etcd.endpoints` to `[]`.
+- Run a single instance of `lexicore`.
+
+### 2. High Availability (Embedded Cluster)
+Lexicore nodes form their own Raft cluster. No external database required.
+- Set `etcd.name` uniquely on each node.
+- Set `etcd.initialCluster` to include all node peer addresses.
+- Load-balance the `server.address` across all nodes.
+
+### 3. External (K8s / Cloud Style)
+Offload state management to a dedicated etcd cluster (like a production K8s etcd).
+- Provide the cluster IPs in `etcd.endpoints`.
+- Internal etcd server will be automatically disabled.
+
+---
+
+## Using `lexictl`
+
+Lexicore includes a command-line tool, `lexictl`, to manage resources similarly to `kubectl`.
+
+### Apply a configuration
+```bash
+./lexictl apply -f my-resource.yaml
+```
+
+### List resources
+```bash
+./lexictl get synctargets
+./lexictl get is  # Short alias for IdentitySources
+```
+
+### Delete a resource
+```bash
+./lexictl delete st email-provisioning
+```
+---
+
+## Resource Examples
+
+### 1. Identity Source (`IdentitySource`)
 Define where your users come from:
 
 ```yaml
@@ -66,16 +138,13 @@ metadata:
   name: corporate-ldap
 spec:
   type: ldap
-  syncPeriod: 5m
   config:
     url: ldap://ldap.example.com
-    bindDN: cn=admin,dc=example,dc=com
-    bindPassword: ${LDAP_PASSWORD}
     baseDN: ou=users,dc=example,dc=com
 ```
 
-#### 2. Sync Target
-Define how those users should be provisioned into a specific service:
+### 2. Sync Target (`SyncTarget`)
+Define where those users should be provisioned:
 
 ```yaml
 apiVersion: lexicore.io/v1
@@ -90,88 +159,50 @@ spec:
       type: selector
       config:
         groupSelector: developers
-    - name: data-cleanup
-      type: sanitizer
-      config:
-        sanitizers:
-          - field: email
-            type: lowercase
-          - field: email
-            type: trim
-          - field: username
-            type: regex
-            pattern: "^(.+)@.+$"
-            replace: "$1"
-    - name: mail-defaults
-      type: constant
-      config:
-        mappings:
-          quota: 5242880 # 5GB
-          domain: example.com
     - name: path-templates
       type: template
       config:
         templates:
-          maildir: "/var/vmail/{{.Attributes.domain}}/{{.Username}}/"
+          maildir: "/var/vmail/{{.Username}}/"
           displayName: "{{.Attributes.firstName}} {{.Attributes.lastName}}"
 ```
-
-#### Expected Actions & Changes
-When this configuration is applied, the orchestrator performs the following changes on the downstream service (**Dovecot**):
-
-*   **Membership Alignment**: Creates new mailboxes for LDAP users in the `developers` group and deletes mailboxes for users who have left that group or LDAP entirely.
-*   **Data Sanitization**: Automatically fixes formatting issues by forcing emails to lowercase, trimming whitespace, and stripping domain suffixes from usernames (e.g., `Alice@Example.com` becomes `alice`).
-*   **Quota Enforcement**: Forces a strict `5242880` (5GB) limit on all accounts; any manual overrides in the target system will be reverted to this value.
-*   **Dynamic Pathing**: Calculates and sets the `maildir` path using the sanitized username and the mapped domain (e.g., `/var/vmail/example.com/alice/`).
-*   **Metadata Enrichment**: Updates the target's `displayName` field by merging LDAP `firstName` and `lastName` attributes.
-*   **State Drift Correction**: If an account exists but its attributes (like the display name or path) differ from the processed LDAP source, the orchestrator will update only those specific fields.
 
 ---
 
 ## Transformer Types
 
-Lexicore uses a pipeline architecture where identities are passed through a series of transformers. Each transformer modifies the identity set before it reaches the operator.
-
 ### `selector`
-Used to include or exclude identities based on specific criteria.
-*   **`groupSelector`**: Only includes users who are members of the specified group name.
-*   **`emailDomain`**: (Planned) Selectors users based on the domain part of their email address.
-*   **Use Case**: Restricting a high-privilege Unix sync target only to the `sysadmins` LDAP group.
+Filters identities before they reach the operator.
+*   **`groupSelector`**: Only includes users who are members of a specific group.
+*   **Use Case**: Restricting Unix shell access to the `sysadmins` group.
 
 ### `sanitizer`
-Performs fine-grained manipulation on individual identity fields (Username, Email, etc.).
-*   **`regex`**: Applies a regular expression pattern and replaces it with a specific value. Useful for stripping suffixes or prefixing IDs.
-*   **`lowercase` / `uppercase`**: Standardizes the casing of a field to prevent duplicate accounts in case-sensitive systems.
-*   **`trim`**: Removes leading and trailing whitespace from strings.
-*   **`compute`**: Generates a new attribute based on a simple expression using other identity fields.
-
-### `constant`
-Injects static, hard-coded values into the identity attributes.
-*   **`mappings`**: A dictionary of key-value pairs that will be added to every identity. If a key already exists from the source, the constant value will overwrite it.
-*   **Use Case**: Setting a global `shell: /bin/bash` or `organization: ACME Corp` for all provisioned accounts.
+Standardizes identity fields.
+*   **`regex`**: Regex replacement for field cleanup.
+*   **`lowercase` / `uppercase`**: Enforces casing standards.
+*   **`trim`**: Removes accidental whitespace.
 
 ### `template`
-The most powerful transformer, utilizing Go's `text/template` engine for dynamic attribute generation.
-*   **`templates`**: A dictionary where the value is a template string. You can access core fields (e.g., `{{.Username}}`) and existing attributes (e.g., `{{.Attributes.department}}`).
-*   **Context**: Templates have access to the full Identity object, allowing for complex logic like home directory generation or localized welcome messages.
-*   **Use Case**: Generating complex file system paths: `homeDir: "/home/{{.Attributes.region}}/{{.Username}}"`.
+Dynamic attribute generation using Go's `text/template`.
+*   **Context**: Access to `{{.Username}}`, `{{.Email}}`, and `{{.Attributes}}`.
+*   **Use Case**: `homeDir: "/home/{{.Attributes.department}}/{{.Username}}"`.
 
 ---
 
 ## Development Status: WIP
 
 > [!WARNING]  
-> This repo is currently in heavy development. Expect breaking changes in the API and manifest schema until version `1.0.0`. 
+> Lexicore is currently in heavy development. Expect breaking changes in the API and manifest schema until version `1.0.0`. 
 
 ### Roadmap
-- [x] Core Reconciliation Loop
-- [x] LDAP Source Driver
-- [x] Selector, Constant, and Template Transformers
-- [ ] First-party operators implementation (AD, Dovecot ACLs, etc.)
-- [ ] Webhook source/target drivers
+- [x] Embedded HA etcd integration
+- [x] Kubernetes-style REST API
+- [x] `lexictl` CLI tool
+- [x] Core Reconciliation Worker Pool
+- [ ] First-party operators (Active Directory, Dovecot ACLs, etc.)
 - [ ] Comprehensive Prometheus Metrics
+- [ ] Resource Versioning and Conflict Detection
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-

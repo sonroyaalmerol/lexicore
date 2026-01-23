@@ -2,9 +2,11 @@ package controller
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"codeberg.org/lexicore/lexicore/pkg/config"
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -16,7 +18,7 @@ import (
 
 func TestManager_RegisterSource(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{}
 	manager.RegisterSource("test-source", src)
@@ -28,7 +30,7 @@ func TestManager_RegisterSource(t *testing.T) {
 
 func TestManager_RegisterOperator(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	op := newMockOperator("test-op")
 	manager.RegisterOperator(op)
@@ -41,7 +43,7 @@ func TestManager_RegisterOperator(t *testing.T) {
 
 func TestManager_AddSyncTarget(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{}
 	op := newMockOperator("test-op")
@@ -110,7 +112,7 @@ func TestManager_AddSyncTarget(t *testing.T) {
 
 func TestManager_Reconcile(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
 		identities: []source.Identity{
@@ -154,7 +156,7 @@ func TestManager_Reconcile(t *testing.T) {
 	err = manager.reconcile(ctx, target)
 	require.NoError(t, err)
 
-	assert.True(t, op.syncCalled)
+	assert.True(t, op.syncCalled.Load())
 	assert.Equal(t, 2, len(op.lastState.Identities))
 	assert.Equal(t, 2, len(op.lastState.Groups))
 	assert.False(t, op.lastState.DryRun)
@@ -162,7 +164,7 @@ func TestManager_Reconcile(t *testing.T) {
 
 func TestManager_ReconcileWithTransformers(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
 		identities: []source.Identity{
@@ -223,16 +225,6 @@ func TestManager_ReconcileWithTransformers(t *testing.T) {
 					},
 				},
 				{
-					Name: "add-domain",
-					Type: "constant",
-					Config: map[string]any{
-						"mappings": map[string]any{
-							"domain": "company.com",
-							"quota":  5000,
-						},
-					},
-				},
-				{
 					Name: "generate-display-name",
 					Type: "template",
 					Config: map[string]any{
@@ -253,16 +245,12 @@ func TestManager_ReconcileWithTransformers(t *testing.T) {
 	err = manager.reconcile(ctx, target)
 	require.NoError(t, err)
 
-	assert.True(t, op.syncCalled)
+	assert.True(t, op.syncCalled.Load())
 	// Should only have alice and charlie (selectored by developers group)
 	assert.Equal(t, 2, len(op.lastState.Identities))
 
 	// Verify transformations were applied
 	for _, identity := range op.lastState.Identities {
-		// Check constant transformer added domain and quota
-		assert.Equal(t, "company.com", identity.Attributes["domain"])
-		assert.Equal(t, 5000, identity.Attributes["quota"])
-
 		// Check template transformer generated fields
 		assert.Contains(t, identity.Attributes, "displayName")
 		assert.Contains(t, identity.Attributes, "homeDir")
@@ -279,7 +267,7 @@ func TestManager_ReconcileWithTransformers(t *testing.T) {
 
 func TestManager_ReconcileWithDryRun(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
 		identities: []source.Identity{
@@ -308,13 +296,13 @@ func TestManager_ReconcileWithDryRun(t *testing.T) {
 	err = manager.reconcile(ctx, target)
 	require.NoError(t, err)
 
-	assert.True(t, op.syncCalled)
+	assert.True(t, op.syncCalled.Load())
 	assert.True(t, op.lastState.DryRun)
 }
 
 func TestManager_ReconcileWithInvalidTransformer(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
 		identities: []source.Identity{
@@ -353,7 +341,7 @@ func TestManager_ReconcileWithInvalidTransformer(t *testing.T) {
 
 func TestManager_ReconcileWithSourceError(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
 		getIdentitiesError: assert.AnError,
@@ -383,7 +371,7 @@ func TestManager_ReconcileWithSourceError(t *testing.T) {
 
 func TestManager_ReconcileWithOperatorError(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
 		identities: []source.Identity{
@@ -420,7 +408,7 @@ func TestManager_Start(t *testing.T) {
 	}
 
 	logger, _ := zap.NewDevelopment()
-	manager := NewManager(logger)
+	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
 		identities: []source.Identity{
@@ -454,7 +442,7 @@ func TestManager_Start(t *testing.T) {
 	// Wait a bit to ensure at least one reconciliation happens
 	time.Sleep(500 * time.Millisecond)
 
-	assert.True(t, op.syncCalled)
+	assert.True(t, op.syncCalled.Load())
 }
 
 // Mock implementations
@@ -494,7 +482,7 @@ func (m *mockSource) Close() error {
 
 type mockOperator struct {
 	*operator.BaseOperator
-	syncCalled bool
+	syncCalled atomic.Bool
 	lastState  *operator.SyncState
 	syncResult *operator.SyncResult
 	syncError  error
@@ -523,7 +511,7 @@ func (m *mockOperator) Sync(
 	ctx context.Context,
 	state *operator.SyncState,
 ) (*operator.SyncResult, error) {
-	m.syncCalled = true
+	m.syncCalled.Store(true)
 	m.lastState = state
 
 	if m.syncError != nil {

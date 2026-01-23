@@ -40,7 +40,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 	err = reconciler.Reconcile(context.Background())
 	require.NoError(t, err)
 
-	assert.True(t, op.syncCalled)
+	assert.True(t, op.syncCalled.Load())
 	assert.Equal(t, "Success", target.Status.Status)
 }
 
@@ -65,13 +65,13 @@ func TestReconciler_Reconcile_NoChanges(t *testing.T) {
 	// First reconcile - should sync
 	err = reconciler.Reconcile(context.Background())
 	require.NoError(t, err)
-	assert.True(t, op.syncCalled)
+	assert.True(t, op.syncCalled.Load())
 
 	// Reset sync flag
-	op.syncCalled = false
+	op.syncCalled.Store(false)
 
 	// Second reconcile - no changes, should not sync
 	err = reconciler.Reconcile(context.Background())
 	require.NoError(t, err)
-	assert.False(t, op.syncCalled)
+	assert.False(t, op.syncCalled.Load())
 }

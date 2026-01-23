@@ -54,8 +54,6 @@ func createTransformer(config manifest.TransformerConfig) (Transformer, error) {
 	switch config.Type {
 	case "selector":
 		return NewSelectorTransformer(config.Config)
-	case "constant":
-		return NewConstantTransformer(config.Config)
 	case "template":
 		return NewTemplateTransformer(config.Config)
 	case "sanitizer":

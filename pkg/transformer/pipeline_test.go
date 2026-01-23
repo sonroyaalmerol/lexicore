@@ -33,31 +33,6 @@ func TestSelectorTransformer_Transform(t *testing.T) {
 	assert.Equal(t, "user3", selectored[1].Username)
 }
 
-func TestConstantTransformer_Transform(t *testing.T) {
-	config := map[string]any{
-		"mappings": map[string]any{
-			"domain":  "example.com",
-			"maildir": "/var/mail/{{username}}",
-		},
-	}
-
-	mt, err := NewConstantTransformer(config)
-	require.NoError(t, err)
-
-	identities := []source.Identity{
-		{
-			Username:   "user1",
-			Attributes: make(map[string]any),
-		},
-	}
-
-	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := mt.Transform(ctx, identities, []source.Group{})
-
-	require.NoError(t, err)
-	assert.Equal(t, "example.com", transformed[0].Attributes["domain"])
-}
-
 func TestTemplateTransformer_Transform(t *testing.T) {
 	config := map[string]any{
 		"templates": map[string]any{
@@ -93,15 +68,6 @@ func TestPipeline_Execute(t *testing.T) {
 				"groupSelector": "admins",
 			},
 		},
-		{
-			Name: "constant",
-			Type: "constant",
-			Config: map[string]any{
-				"mappings": map[string]any{
-					"domain": "example.com",
-				},
-			},
-		},
 	}
 
 	pipeline, err := NewPipeline(configs)
@@ -118,5 +84,4 @@ func TestPipeline_Execute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, result, 1)
 	assert.Equal(t, "user1", result[0].Username)
-	assert.Equal(t, "example.com", result[0].Attributes["domain"])
 }
