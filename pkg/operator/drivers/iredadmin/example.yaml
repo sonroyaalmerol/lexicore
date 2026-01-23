@@ -1,0 +1,20 @@
+apiVersion: lexicore.io/v1
+kind: SyncTarget
+metadata:
+  name: mail-provisioning
+spec:
+  sourceRef: authentik-source
+  operator: iredadmin
+  config:
+    url: "https://mail.example.com/iredadmin"
+    api_key: "${IREDADMIN_API_KEY}"
+  transformers:
+    - name: mail-settings
+      type: template
+      config:
+        templates:
+          # Settings prefixed with 'iredadmin:' are passed as parameters to iRedAdmin API
+          iredadmin:quota: "1024"        # MB
+          iredadmin:language: "en_US"
+          iredadmin:enable_imap: "yes"
+          iredadmin:enable_pop3: "no"

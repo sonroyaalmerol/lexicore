@@ -1,0 +1,22 @@
+apiVersion: lexicore.io/v1
+kind: SyncTarget
+metadata:
+  name: openldap-sync
+spec:
+  sourceRef: authentik-source
+  operator: ldap
+  config:
+    url: "ldap://ldap.internal:389"
+    bindDN: "cn=admin,dc=example,dc=org"
+    bindPassword: "${LDAP_PASS}"
+    userBaseDN: "ou=users,dc=example,dc=org"
+    rdnAttribute: "uid"
+  transformers:
+    - name: ldap-mapper
+      type: template
+      config:
+        templates:
+          ldap:givenName: "{{.DisplayName}}"
+          ldap:sn: "{{.Username}}"
+          ldap:employeeNumber: "{{.UID}}"
+          ldap:loginShell: "/bin/bash"

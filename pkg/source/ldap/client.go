@@ -3,6 +3,7 @@ package ldap
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/go-ldap/ldap/v3"
@@ -13,8 +14,8 @@ type Config struct {
 	BindDN          string
 	BindPassword    string
 	BaseDN          string
-	UserSelector  string
-	GroupSelector string
+	UserSelector    string
+	GroupSelector   string
 	UserAttributes  []string
 	GroupAttributes []string
 	TLSConfig       *TLSConfig
@@ -30,11 +31,15 @@ type TLSConfig struct {
 
 type LDAPSource struct {
 	config *Config
+	mapper *Mapper
 	conn   *ldap.Conn
 }
 
-func NewLDAPSource(config *Config) *LDAPSource {
-	return &LDAPSource{config: config}
+func NewLDAPSource(config *Config, mapperConfig *MapperConfig) *LDAPSource {
+	return &LDAPSource{
+		config: config,
+		mapper: NewMapper(mapperConfig),
+	}
 }
 
 func (l *LDAPSource) Connect(ctx context.Context) error {
@@ -62,9 +67,7 @@ func (l *LDAPSource) GetIdentities(ctx context.Context) ([]source.Identity, erro
 		l.config.BaseDN,
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
-		0,
-		0,
-		false,
+		0, 0, false,
 		l.config.UserSelector,
 		l.config.UserAttributes,
 		nil,
@@ -77,25 +80,8 @@ func (l *LDAPSource) GetIdentities(ctx context.Context) ([]source.Identity, erro
 
 	identities := make([]source.Identity, 0, len(sr.Entries))
 	for _, entry := range sr.Entries {
-		identity := source.Identity{
-			UID:        entry.GetAttributeValue("uid"),
-			Username:   entry.GetAttributeValue("cn"),
-			Email:      entry.GetAttributeValue("mail"),
-			Groups:     entry.GetAttributeValues("memberOf"),
-			Attributes: make(map[string]any),
-		}
-
-		for _, attr := range entry.Attributes {
-			if len(attr.Values) == 1 {
-				identity.Attributes[attr.Name] = attr.Values[0]
-			} else {
-				identity.Attributes[attr.Name] = attr.Values
-			}
-		}
-
-		identities = append(identities, identity)
+		identities = append(identities, l.mapper.MapIdentity(entry))
 	}
-
 	return identities, nil
 }
 
@@ -104,9 +90,7 @@ func (l *LDAPSource) GetGroups(ctx context.Context) ([]source.Group, error) {
 		l.config.BaseDN,
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
-		0,
-		0,
-		false,
+		0, 0, false,
 		l.config.GroupSelector,
 		l.config.GroupAttributes,
 		nil,
@@ -119,37 +103,131 @@ func (l *LDAPSource) GetGroups(ctx context.Context) ([]source.Group, error) {
 
 	groups := make([]source.Group, 0, len(sr.Entries))
 	for _, entry := range sr.Entries {
-		group := source.Group{
-			GID:         entry.GetAttributeValue("gidNumber"),
-			Name:        entry.GetAttributeValue("cn"),
-			Members:     entry.GetAttributeValues("member"),
-			Description: entry.GetAttributeValue("description"),
-			Attributes:  make(map[string]any),
-		}
-
-		for _, attr := range entry.Attributes {
-			if len(attr.Values) == 1 {
-				group.Attributes[attr.Name] = attr.Values[0]
-			} else {
-				group.Attributes[attr.Name] = attr.Values
-			}
-		}
-
-		groups = append(groups, group)
+		groups = append(groups, l.mapper.MapGroup(entry))
 	}
-
 	return groups, nil
 }
 
 func (l *LDAPSource) Watch(ctx context.Context) (<-chan source.Event, error) {
-	// TODO: implement LDAP persistent search or sync repl
 	events := make(chan source.Event)
+	combinedFilter := fmt.Sprintf("(|%s%s)", l.config.UserSelector, l.config.GroupSelector)
+	allAttributes := append(l.config.UserAttributes, l.config.GroupAttributes...)
+
+	go func() {
+		defer close(events)
+
+		// Attempt RFC 4533 (SyncRepl)
+		syncControl := ldap.NewControlSyncRequest(ldap.SyncRequestModeRefreshAndPersist, nil, true)
+		searchRequest := ldap.NewSearchRequest(
+			l.config.BaseDN,
+			ldap.ScopeWholeSubtree,
+			ldap.NeverDerefAliases,
+			0, 0, false,
+			combinedFilter,
+			allAttributes,
+			[]ldap.Control{syncControl},
+		)
+
+		sr, err := l.conn.Search(searchRequest)
+
+		if err != nil && ldap.IsErrorWithCode(err, ldap.LDAPResultUnavailableCriticalExtension) {
+			l.runPollingWatch(ctx, events, combinedFilter, allAttributes)
+			return
+		}
+
+		if err == nil {
+			for _, entry := range sr.Entries {
+				l.sendEvent(ctx, events, entry)
+			}
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if err != nil {
+					time.Sleep(10 * time.Second)
+					_ = l.Connect(ctx)
+				}
+				sr, err = l.conn.Search(searchRequest)
+				if err == nil {
+					for _, entry := range sr.Entries {
+						l.sendEvent(ctx, events, entry)
+					}
+				}
+			}
+		}
+	}()
+
 	return events, nil
+}
+
+func (l *LDAPSource) runPollingWatch(ctx context.Context, events chan<- source.Event, filter string, attrs []string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	searchRequest := ldap.NewSearchRequest(
+		l.config.BaseDN,
+		ldap.ScopeWholeSubtree,
+		ldap.NeverDerefAliases,
+		0, 0, false,
+		filter,
+		attrs,
+		nil,
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sr, err := l.conn.Search(searchRequest)
+			if err != nil {
+				_ = l.Connect(ctx)
+				continue
+			}
+
+			for _, entry := range sr.Entries {
+				l.sendEvent(ctx, events, entry)
+			}
+		}
+	}
+}
+
+func (l *LDAPSource) sendEvent(ctx context.Context, events chan<- source.Event, entry *ldap.Entry) {
+	event := l.processSyncEntry(entry)
+	select {
+	case events <- event:
+	case <-ctx.Done():
+	}
+}
+
+func (l *LDAPSource) processSyncEntry(entry *ldap.Entry) source.Event {
+	isGroup := entry.GetAttributeValue(l.mapper.config.GIDAttribute) != ""
+
+	now := time.Now().Unix()
+
+	if isGroup {
+		g := l.mapper.MapGroup(entry)
+		return source.Event{
+			Type:      source.EventUpdate,
+			Group:     &g,
+			Timestamp: now,
+		}
+	}
+
+	i := l.mapper.MapIdentity(entry)
+	return source.Event{
+		Type:      source.EventUpdate,
+		Identity:  &i,
+		Timestamp: now,
+	}
 }
 
 func (l *LDAPSource) Close() error {
 	if l.conn != nil {
-		l.conn.Close()
+		return l.conn.Close()
 	}
 	return nil
 }

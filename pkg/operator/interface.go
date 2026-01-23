@@ -8,17 +8,9 @@ import (
 
 type Operator interface {
 	Name() string
-
-	// Initialize sets up the operator with configuration
 	Initialize(ctx context.Context, config map[string]any) error
-
-	// Sync performs the synchronization
 	Sync(ctx context.Context, state *SyncState) (*SyncResult, error)
-
-	// Validate checks if the operator can connect and has proper permissions
 	Validate(ctx context.Context) error
-
-	// Close cleans up resources
 	Close() error
 }
 

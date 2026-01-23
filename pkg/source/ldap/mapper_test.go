@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMapper_ConstantIdentity(t *testing.T) {
+func TestMapper_MapIdentity(t *testing.T) {
 	config := &MapperConfig{
 		UIDAttribute:      "uid",
 		UsernameAttribute: "cn",
@@ -27,7 +27,7 @@ func TestMapper_ConstantIdentity(t *testing.T) {
 		},
 	)
 
-	identity := mapper.ConstantIdentity(entry)
+	identity := mapper.MapIdentity(entry)
 
 	assert.Equal(t, "john123", identity.UID)
 	assert.Equal(t, "john", identity.Username)
@@ -54,6 +54,11 @@ func TestMapper_ExtractCNFromDN(t *testing.T) {
 			name: "complex DN",
 			dn:   "cn=john doe,ou=users,ou=people,dc=example,dc=com",
 			want: "john doe",
+		},
+		{
+			name: "case insensitive CN",
+			dn:   "CN=Jane,dc=example,dc=com",
+			want: "Jane",
 		},
 		{
 			name: "no CN",
@@ -88,6 +93,11 @@ func TestMapper_ExtractDomainFromDN(t *testing.T) {
 			name: "subdomain",
 			dn:   "cn=admin,ou=users,dc=sub,dc=example,dc=com",
 			want: "sub.example.com",
+		},
+		{
+			name: "case insensitive DC",
+			dn:   "CN=admin,DC=CORP,DC=LOCAL",
+			want: "corp.local",
 		},
 		{
 			name: "no domain",

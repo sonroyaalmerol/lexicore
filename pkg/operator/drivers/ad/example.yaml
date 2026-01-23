@@ -1,0 +1,24 @@
+apiVersion: lexicore.io/v1
+kind: SyncTarget
+metadata:
+  name: ad-provisioning
+spec:
+  sourceRef: authentik-prod
+  operator: active-directory
+  config:
+    url: "ldaps://dc01.example.com:636"
+    bindDN: "cn=LexicoreService,ou=ServiceAccounts,dc=example,dc=com"
+    bindPassword: "${AD_SERVICE_PASS}"
+    userBaseDN: "ou=Users,dc=example,dc=com"
+    domain: "example.com"
+    defaultPassword: "ChangeMe123!" # Required for initial creation
+  transformers:
+    - name: ad-mapper
+      type: template
+      config:
+        templates:
+          # Map source attributes to AD schema
+          ad:title: "{{.Attributes.jobTitle}}"
+          ad:department: "{{.Attributes.dept}}"
+          ad:telephoneNumber: "{{.Attributes.phone}}"
+          ad:company: "Acme Corp"

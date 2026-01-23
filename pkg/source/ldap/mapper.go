@@ -27,44 +27,47 @@ type MapperConfig struct {
 }
 
 func NewMapper(config *MapperConfig) *Mapper {
-	if config.UIDAttribute == "" {
-		config.UIDAttribute = "uid"
-	}
-	if config.UsernameAttribute == "" {
-		config.UsernameAttribute = "cn"
-	}
-	if config.EmailAttribute == "" {
-		config.EmailAttribute = "mail"
-	}
-	if config.GroupsAttribute == "" {
-		config.GroupsAttribute = "memberOf"
-	}
-	if config.DisplayNameAttribute == "" {
-		config.DisplayNameAttribute = "displayName"
-	}
-	if config.GIDAttribute == "" {
-		config.GIDAttribute = "gidNumber"
-	}
-	if config.GroupNameAttribute == "" {
-		config.GroupNameAttribute = "cn"
-	}
-	if config.GroupMembersAttribute == "" {
-		config.GroupMembersAttribute = "member"
-	}
-	if config.GroupDescriptionAttribute == "" {
-		config.GroupDescriptionAttribute = "description"
-	}
-
+	setDefaults(config)
 	return &Mapper{config: config}
 }
 
-func (m *Mapper) ConstantIdentity(entry *ldap.Entry) source.Identity {
+func setDefaults(c *MapperConfig) {
+	if c.UIDAttribute == "" {
+		c.UIDAttribute = "uid"
+	}
+	if c.UsernameAttribute == "" {
+		c.UsernameAttribute = "cn"
+	}
+	if c.EmailAttribute == "" {
+		c.EmailAttribute = "mail"
+	}
+	if c.GroupsAttribute == "" {
+		c.GroupsAttribute = "memberOf"
+	}
+	if c.DisplayNameAttribute == "" {
+		c.DisplayNameAttribute = "displayName"
+	}
+	if c.GIDAttribute == "" {
+		c.GIDAttribute = "gidNumber"
+	}
+	if c.GroupNameAttribute == "" {
+		c.GroupNameAttribute = "cn"
+	}
+	if c.GroupMembersAttribute == "" {
+		c.GroupMembersAttribute = "member"
+	}
+	if c.GroupDescriptionAttribute == "" {
+		c.GroupDescriptionAttribute = "description"
+	}
+}
+
+func (m *Mapper) MapIdentity(entry *ldap.Entry) source.Identity {
 	identity := source.Identity{
-		UID:         m.getAttributeValue(entry, m.config.UIDAttribute),
-		Username:    m.getAttributeValue(entry, m.config.UsernameAttribute),
-		Email:       m.getAttributeValue(entry, m.config.EmailAttribute),
-		DisplayName: m.getAttributeValue(entry, m.config.DisplayNameAttribute),
-		Groups:      m.getAttributeValues(entry, m.config.GroupsAttribute),
+		UID:         entry.GetAttributeValue(m.config.UIDAttribute),
+		Username:    entry.GetAttributeValue(m.config.UsernameAttribute),
+		Email:       entry.GetAttributeValue(m.config.EmailAttribute),
+		DisplayName: entry.GetAttributeValue(m.config.DisplayNameAttribute),
+		Groups:      entry.GetAttributeValues(m.config.GroupsAttribute),
 		Attributes:  make(map[string]any),
 	}
 
@@ -79,27 +82,24 @@ func (m *Mapper) ConstantIdentity(entry *ldap.Entry) source.Identity {
 	identity.Attributes["dn"] = entry.DN
 
 	if m.config.ExtractDomainFromDN {
-		domain := m.extractDomainFromDN(entry.DN)
-		if domain != "" {
+		if domain := m.extractDomainFromDN(entry.DN); domain != "" {
 			identity.Attributes["domain"] = domain
 		}
 	}
 
-	normalizedGroups := make([]string, 0, len(identity.Groups))
-	for _, group := range identity.Groups {
-		normalizedGroups = append(normalizedGroups, m.extractCNFromDN(group))
+	for i, group := range identity.Groups {
+		identity.Groups[i] = m.extractCNFromDN(group)
 	}
-	identity.Groups = normalizedGroups
 
 	return identity
 }
 
-func (m *Mapper) ConstantGroup(entry *ldap.Entry) source.Group {
+func (m *Mapper) MapGroup(entry *ldap.Entry) source.Group {
 	group := source.Group{
-		GID:         m.getAttributeValue(entry, m.config.GIDAttribute),
-		Name:        m.getAttributeValue(entry, m.config.GroupNameAttribute),
-		Description: m.getAttributeValue(entry, m.config.GroupDescriptionAttribute),
-		Members:     m.getAttributeValues(entry, m.config.GroupMembersAttribute),
+		GID:         entry.GetAttributeValue(m.config.GIDAttribute),
+		Name:        entry.GetAttributeValue(m.config.GroupNameAttribute),
+		Description: entry.GetAttributeValue(m.config.GroupDescriptionAttribute),
+		Members:     entry.GetAttributeValues(m.config.GroupMembersAttribute),
 		Attributes:  make(map[string]any),
 	}
 
@@ -113,81 +113,32 @@ func (m *Mapper) ConstantGroup(entry *ldap.Entry) source.Group {
 
 	group.Attributes["dn"] = entry.DN
 
-	normalizedMembers := make([]string, 0, len(group.Members))
-	for _, member := range group.Members {
-		normalizedMembers = append(normalizedMembers, m.extractCNFromDN(member))
+	for i, member := range group.Members {
+		group.Members[i] = m.extractCNFromDN(member)
 	}
-	group.Members = normalizedMembers
 
 	return group
-}
-
-func (m *Mapper) getAttributeValue(entry *ldap.Entry, attribute string) string {
-	return entry.GetAttributeValue(attribute)
-}
-
-func (m *Mapper) getAttributeValues(entry *ldap.Entry, attribute string) []string {
-	return entry.GetAttributeValues(attribute)
 }
 
 func (m *Mapper) extractDomainFromDN(dn string) string {
 	parts := strings.Split(dn, ",")
 	var domainParts []string
-
 	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(strings.ToLower(part), "dc=") {
-			domainParts = append(domainParts, strings.TrimPrefix(part[3:], ""))
+		part = strings.ToLower(strings.TrimSpace(part))
+		if strings.HasPrefix(part, "dc=") {
+			domainParts = append(domainParts, part[3:])
 		}
 	}
-
 	return strings.Join(domainParts, ".")
 }
 
 func (m *Mapper) extractCNFromDN(dn string) string {
 	parts := strings.Split(dn, ",")
 	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(strings.ToLower(part), "cn=") {
-			return part[3:]
+		trimmed := strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(trimmed), "cn=") {
+			return trimmed[3:]
 		}
 	}
 	return dn
-}
-
-func ParseMapperConfig(config map[string]any) (*MapperConfig, error) {
-	mapperConfig := &MapperConfig{}
-
-	if v, ok := config["uidAttribute"].(string); ok {
-		mapperConfig.UIDAttribute = v
-	}
-	if v, ok := config["usernameAttribute"].(string); ok {
-		mapperConfig.UsernameAttribute = v
-	}
-	if v, ok := config["emailAttribute"].(string); ok {
-		mapperConfig.EmailAttribute = v
-	}
-	if v, ok := config["groupsAttribute"].(string); ok {
-		mapperConfig.GroupsAttribute = v
-	}
-	if v, ok := config["displayNameAttribute"].(string); ok {
-		mapperConfig.DisplayNameAttribute = v
-	}
-	if v, ok := config["gidAttribute"].(string); ok {
-		mapperConfig.GIDAttribute = v
-	}
-	if v, ok := config["groupNameAttribute"].(string); ok {
-		mapperConfig.GroupNameAttribute = v
-	}
-	if v, ok := config["groupMembersAttribute"].(string); ok {
-		mapperConfig.GroupMembersAttribute = v
-	}
-	if v, ok := config["groupDescriptionAttribute"].(string); ok {
-		mapperConfig.GroupDescriptionAttribute = v
-	}
-	if v, ok := config["extractDomainFromDN"].(bool); ok {
-		mapperConfig.ExtractDomainFromDN = v
-	}
-
-	return mapperConfig, nil
 }

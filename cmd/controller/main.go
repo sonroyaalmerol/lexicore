@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +22,14 @@ import (
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/ad"
+	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/caldav"
+	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/dovecot"
+	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/iredadmin"
+	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/ldap"
+	_ "codeberg.org/lexicore/lexicore/pkg/source/authentik"
+	_ "codeberg.org/lexicore/lexicore/pkg/source/ldap"
 )
 
 func main() {
@@ -137,6 +146,7 @@ func bootstrapStateFromStore(ctx context.Context, db *store.EtcdStore, mgr *cont
 				src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
 				if err == nil {
 					mgr.RegisterSource(m.Name, src)
+					mgr.AddIdentitySource(&m)
 					logger.Info("Restored IdentitySource", zap.String("name", m.Name))
 				}
 			}
@@ -161,6 +171,8 @@ func bootstrapStateFromStore(ctx context.Context, db *store.EtcdStore, mgr *cont
 }
 
 func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) {
+	parser := manifest.NewParser()
+
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -172,32 +184,43 @@ func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 			return
 		}
 		if r.Method == http.MethodPost {
-			var m manifest.IdentitySource
-			if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-				logger.Error("Failed to decode IdentitySource JSON", zap.Error(err))
-				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Failed to read request", http.StatusInternalServerError)
+				return
+			}
+
+			parsed, err := parser.Parse(body)
+			if err != nil {
+				logger.Error("Manifest parsing failed", zap.Error(err))
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			m, ok := parsed.(*manifest.IdentitySource)
+			if !ok {
+				http.Error(w, "Expected IdentitySource kind", http.StatusBadRequest)
 				return
 			}
 
 			if err := db.Put(ctx, "identitysources", m.Name, m); err != nil {
-				logger.Error("Failed to persist IdentitySource to store", zap.String("name", m.Name), zap.Error(err))
+				logger.Error("Persistence failed", zap.String("name", m.Name), zap.Error(err))
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
 
 			src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
 			if err != nil {
-				logger.Error("Failed to create IdentitySource driver", zap.String("name", m.Name), zap.Error(err))
-				http.Error(w, "Failed to initialize driver", http.StatusInternalServerError)
+				logger.Error("Driver creation failed", zap.String("name", m.Name), zap.Error(err))
+				http.Error(w, "Failed to initialize driver: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 
 			mgr.RegisterSource(m.Name, src)
-			mgr.AddIdentitySource(&m)
+			mgr.AddIdentitySource(m)
 
-			logger.Info("Created IdentitySource", zap.String("name", m.Name), zap.String("type", m.Spec.Type))
+			logger.Info("Created IdentitySource", zap.String("name", m.Name))
 			renderJSON(w, http.StatusCreated, m)
-			return
 		}
 	})
 
@@ -207,42 +230,50 @@ func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 			return
 		}
 		if r.Method == http.MethodPost {
-			var m manifest.SyncTarget
-			if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-				logger.Error("Failed to decode SyncTarget JSON", zap.Error(err))
-				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Failed to read request", http.StatusInternalServerError)
+				return
+			}
+
+			parsed, err := parser.Parse(body)
+			if err != nil {
+				logger.Error("Manifest parsing failed", zap.Error(err))
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			m, ok := parsed.(*manifest.SyncTarget)
+			if !ok {
+				http.Error(w, "Expected SyncTarget kind", http.StatusBadRequest)
 				return
 			}
 
 			if err := db.Put(ctx, "synctargets", m.Name, m); err != nil {
-				logger.Error("Failed to persist SyncTarget to store", zap.String("name", m.Name), zap.Error(err))
+				logger.Error("Persistence failed", zap.String("name", m.Name), zap.Error(err))
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
 
 			op, err := operator.Create(m.Spec.Operator)
 			if err != nil {
-				logger.Error("Operator not found", zap.String("operator", m.Spec.Operator), zap.Error(err))
-				http.Error(w, "Unknown operator", http.StatusBadRequest)
+				http.Error(w, "Unknown operator: "+m.Spec.Operator, http.StatusBadRequest)
 				return
 			}
 
 			if err := op.Initialize(ctx, m.Spec.Config); err != nil {
-				logger.Error("Failed to initialize operator", zap.String("operator", m.Spec.Operator), zap.Error(err))
-				http.Error(w, "Operator initialization failed", http.StatusInternalServerError)
+				http.Error(w, "Operator init failed", http.StatusInternalServerError)
 				return
 			}
 
 			mgr.RegisterOperator(op)
-			if err := mgr.AddSyncTarget(&m); err != nil {
-				logger.Error("Failed to add SyncTarget to manager", zap.String("name", m.Name), zap.Error(err))
-				http.Error(w, "Target registration failed", http.StatusInternalServerError)
+			if err := mgr.AddSyncTarget(m); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
-			logger.Info("Created SyncTarget", zap.String("name", m.Name), zap.String("operator", m.Spec.Operator))
+			logger.Info("Created SyncTarget", zap.String("name", m.Name))
 			renderJSON(w, http.StatusCreated, m)
-			return
 		}
 	})
 
