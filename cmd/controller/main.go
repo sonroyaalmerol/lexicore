@@ -19,6 +19,11 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/store"
+
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -33,7 +38,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "/etc/lexicore/config.yaml", "Path to the configuration file")
+	configPath := flag.String("config", "/etc/lexicore/config.yaml", "Path to config")
 	flag.Parse()
 
 	cfg, err := config.LoadConfig(*configPath)
@@ -41,295 +46,235 @@ func main() {
 		if os.IsNotExist(err) {
 			cfg = config.DefaultConfig()
 		} else {
-			panic("Failed to load config: " + err.Error())
+			panic(err)
 		}
 	}
 
 	logger := initLogger(cfg.Logging)
 	defer logger.Sync()
 
-	logger.Info("Starting Lexicore Identity Orchestrator",
-		zap.String("addr", cfg.Server.Address),
-		zap.String("etcd_mode", getEtcdMode(cfg.Etcd)))
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var clientEndpoints []string
+	var endpoints []string
 	if len(cfg.Etcd.Endpoints) > 0 {
-		clientEndpoints = cfg.Etcd.Endpoints
-		logger.Info("Connecting to external etcd cluster", zap.Strings("endpoints", clientEndpoints))
+		endpoints = cfg.Etcd.Endpoints
+		logger.Info("Using external etcd", zap.Strings("endpoints", endpoints))
 	} else {
-		etcdServer := startEmbeddedHA(cfg.Etcd, logger)
-		defer etcdServer.Close()
-		clientEndpoints = []string{cfg.Etcd.ClientAddr}
+		e := startEmbeddedHA(cfg.Etcd, logger)
+		defer e.Close()
+		endpoints = []string{cfg.Etcd.ClientAddr}
+		logger.Info("Using embedded etcd", zap.String("addr", cfg.Etcd.ClientAddr))
 	}
 
-	db, err := store.NewEtcdStore(clientEndpoints, 5*time.Second)
+	db, err := store.NewEtcdStore(endpoints, 5*time.Second)
 	if err != nil {
-		logger.Fatal("Failed to initialize etcd store", zap.Error(err))
+		logger.Fatal("Store init failed", zap.Error(err))
 	}
 
 	mgr := controller.NewManager(cfg, logger)
-	bootstrapStateFromStore(ctx, db, mgr, logger)
 
-	go func() {
-		logger.Info("Starting Controller Manager reconciliation loop")
-		if err := mgr.Start(ctx); err != nil {
-			logger.Error("Controller Manager exited with error", zap.Error(err))
-		}
-	}()
+	go runWatchLoop(ctx, db, mgr, logger, "identitysources")
+	go runWatchLoop(ctx, db, mgr, logger, "synctargets")
+	go runLeaderElection(ctx, db, mgr, cfg.Etcd.Name, logger)
 
 	mux := http.NewServeMux()
 	setupRoutes(mux, ctx, db, mgr, logger)
 
 	srv := &http.Server{
-		Addr:    cfg.Server.Address,
-		Handler: mux,
+		Addr:         cfg.Server.Address,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("API server failed", zap.Error(err))
+			logger.Fatal("Server failed", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
-	logger.Info("Shutdown signal received. Cleaning up...")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	sCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Graceful shutdown failed", zap.Error(err))
-	}
-
-	logger.Info("Lexicore shutdown complete")
+	srv.Shutdown(sCtx)
 }
 
-func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
-	eCfg := embed.NewConfig()
-	eCfg.Name = c.Name
-	eCfg.Dir = c.DataDir
-
-	curl, _ := url.Parse(c.ClientAddr)
-	purl, _ := url.Parse(c.PeerAddr)
-
-	eCfg.ListenClientUrls = []url.URL{*curl}
-	eCfg.AdvertiseClientUrls = []url.URL{*curl}
-	eCfg.ListenPeerUrls = []url.URL{*purl}
-	eCfg.AdvertisePeerUrls = []url.URL{*purl}
-
-	eCfg.InitialCluster = c.InitialCluster
-
-	e, err := embed.StartEtcd(eCfg)
-	if err != nil {
-		logger.Fatal("Failed to start embedded etcd", zap.Error(err))
-	}
-
-	select {
-	case <-e.Server.ReadyNotify():
-		logger.Info("Embedded etcd is ready", zap.String("node", c.Name))
-	case <-time.After(60 * time.Second):
-		logger.Fatal("Embedded etcd startup timed out")
-	}
-
-	return e
-}
-
-func bootstrapStateFromStore(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) {
-	sources, err := db.List(ctx, "identitysources")
-	if err == nil {
-		for _, data := range sources {
-			var m manifest.IdentitySource
-			if err := json.Unmarshal(data, &m); err == nil {
-				src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
-				if err == nil {
-					mgr.RegisterSource(m.Name, src)
-					mgr.AddIdentitySource(&m)
-					logger.Info("Restored IdentitySource", zap.String("name", m.Name))
+func runWatchLoop(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger, kind string) {
+	var rev int64 = 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			wch := db.Watch(ctx, kind, rev)
+			for resp := range wch {
+				if resp.Canceled {
+					if resp.Err() == rpctypes.ErrCompacted {
+						rev = resp.CompactRevision
+						logger.Warn("Watch compacted, resetting revision", zap.Int64("rev", rev))
+					}
+					break
 				}
+				for _, ev := range resp.Events {
+					rev = ev.Kv.ModRevision + 1
+					handleStoreEvent(ctx, mgr, kind, ev, logger)
+				}
+			}
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+func handleStoreEvent(ctx context.Context, mgr *controller.Manager, kind string, ev *clientv3.Event, logger *zap.Logger) {
+	parts := strings.Split(string(ev.Kv.Key), "/")
+	name := parts[len(parts)-1]
+
+	if ev.Type == mvccpb.DELETE {
+		if kind == "identitysources" {
+			mgr.RemoveIdentitySource(name)
+		} else {
+			mgr.RemoveSyncTarget(name)
+		}
+		logger.Info("Resource deleted", zap.String("kind", kind), zap.String("name", name))
+		return
+	}
+
+	if kind == "identitysources" {
+		var m manifest.IdentitySource
+		if err := json.Unmarshal(ev.Kv.Value, &m); err == nil {
+			if src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config); err == nil {
+				mgr.RegisterSource(m.Name, src)
+				mgr.AddIdentitySource(&m)
+				logger.Info("Resource updated", zap.String("kind", kind), zap.String("name", name))
+			}
+		}
+	} else {
+		var m manifest.SyncTarget
+		if err := json.Unmarshal(ev.Kv.Value, &m); err != nil {
+			if op, err := operator.Create(m.Spec.Operator); err == nil {
+				op.Initialize(ctx, m.Spec.Config)
+				mgr.RegisterOperator(op)
+				mgr.AddSyncTarget(&m)
+				logger.Info("Resource updated", zap.String("kind", kind), zap.String("name", name))
 			}
 		}
 	}
+}
 
-	targets, err := db.List(ctx, "synctargets")
-	if err == nil {
-		for _, data := range targets {
-			var m manifest.SyncTarget
-			if err := json.Unmarshal(data, &m); err == nil {
-				op, err := operator.Create(m.Spec.Operator)
-				if err == nil {
-					op.Initialize(ctx, m.Spec.Config)
-					mgr.RegisterOperator(op)
-					mgr.AddSyncTarget(&m)
-					logger.Info("Restored SyncTarget", zap.String("name", m.Name))
-				}
+func runLeaderElection(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, nodeName string, logger *zap.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			session, err := concurrency.NewSession(db.Client(), concurrency.WithTTL(15))
+			if err != nil {
+				logger.Error("Election session failed", zap.Error(err))
+				time.Sleep(5 * time.Second)
+				continue
 			}
+
+			election := concurrency.NewElection(session, "/lexicore/leader")
+			if err := election.Campaign(ctx, nodeName); err != nil {
+				session.Close()
+				continue
+			}
+
+			logger.Info("Node acquired leadership")
+			runCtx, cancel := context.WithCancel(ctx)
+			go func() {
+				select {
+				case <-session.Done():
+					logger.Warn("Leader session expired, stopping reconciliation")
+					cancel()
+				case <-runCtx.Done():
+				}
+			}()
+
+			if err := mgr.Start(runCtx); err != nil {
+				logger.Error("Manager stopped", zap.Error(err))
+			}
+			session.Close()
 		}
 	}
 }
 
 func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) {
-	parser := manifest.NewParser()
-
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
+	p := manifest.NewParser()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 
 	mux.HandleFunc("/apis/lexicore.io/v1/identitysources", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			renderJSON(w, http.StatusOK, mgr.GetIdentitySources())
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(mgr.GetIdentitySources())
 			return
 		}
 		if r.Method == http.MethodPost {
-			body, err := io.ReadAll(r.Body)
+			b, _ := io.ReadAll(r.Body)
+			m, err := p.Parse(b)
 			if err != nil {
-				http.Error(w, "Failed to read request", http.StatusInternalServerError)
+				http.Error(w, "Invalid manifest", 400)
 				return
 			}
-
-			parsed, err := parser.Parse(body)
-			if err != nil {
-				logger.Error("Manifest parsing failed", zap.Error(err))
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			src := m.(*manifest.IdentitySource)
+			if err := db.Put(ctx, "identitysources", src.Name, src); err != nil {
+				logger.Error("Store put failed", zap.Error(err))
+				http.Error(w, "Store error", 500)
 				return
 			}
-
-			m, ok := parsed.(*manifest.IdentitySource)
-			if !ok {
-				http.Error(w, "Expected IdentitySource kind", http.StatusBadRequest)
-				return
-			}
-
-			if err := db.Put(ctx, "identitysources", m.Name, m); err != nil {
-				logger.Error("Persistence failed", zap.String("name", m.Name), zap.Error(err))
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-
-			src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
-			if err != nil {
-				logger.Error("Driver creation failed", zap.String("name", m.Name), zap.Error(err))
-				http.Error(w, "Failed to initialize driver: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			mgr.RegisterSource(m.Name, src)
-			mgr.AddIdentitySource(m)
-
-			logger.Info("Created IdentitySource", zap.String("name", m.Name))
-			renderJSON(w, http.StatusCreated, m)
+			w.WriteHeader(201)
 		}
 	})
 
 	mux.HandleFunc("/apis/lexicore.io/v1/synctargets", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			renderJSON(w, http.StatusOK, mgr.GetSyncTargets())
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(mgr.GetSyncTargets())
 			return
 		}
 		if r.Method == http.MethodPost {
-			body, err := io.ReadAll(r.Body)
+			b, _ := io.ReadAll(r.Body)
+			m, err := p.Parse(b)
 			if err != nil {
-				http.Error(w, "Failed to read request", http.StatusInternalServerError)
+				http.Error(w, "Invalid manifest", 400)
 				return
 			}
-
-			parsed, err := parser.Parse(body)
-			if err != nil {
-				logger.Error("Manifest parsing failed", zap.Error(err))
-				http.Error(w, err.Error(), http.StatusBadRequest)
+			target := m.(*manifest.SyncTarget)
+			if err := db.Put(ctx, "synctargets", target.Name, target); err != nil {
+				logger.Error("Store put failed", zap.Error(err))
+				http.Error(w, "Store error", 500)
 				return
 			}
-
-			m, ok := parsed.(*manifest.SyncTarget)
-			if !ok {
-				http.Error(w, "Expected SyncTarget kind", http.StatusBadRequest)
-				return
-			}
-
-			if err := db.Put(ctx, "synctargets", m.Name, m); err != nil {
-				logger.Error("Persistence failed", zap.String("name", m.Name), zap.Error(err))
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-
-			op, err := operator.Create(m.Spec.Operator)
-			if err != nil {
-				http.Error(w, "Unknown operator: "+m.Spec.Operator, http.StatusBadRequest)
-				return
-			}
-
-			if err := op.Initialize(ctx, m.Spec.Config); err != nil {
-				http.Error(w, "Operator init failed", http.StatusInternalServerError)
-				return
-			}
-
-			mgr.RegisterOperator(op)
-			if err := mgr.AddSyncTarget(m); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			logger.Info("Created SyncTarget", zap.String("name", m.Name))
-			renderJSON(w, http.StatusCreated, m)
+			w.WriteHeader(201)
 		}
 	})
+}
 
-	mux.HandleFunc("/apis/lexicore.io/v1/identitysources/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete {
-			name := strings.TrimPrefix(r.URL.Path, "/apis/lexicore.io/v1/identitysources/")
-			if err := db.Delete(ctx, "identitysources", name); err != nil {
-				logger.Error("Failed to delete IdentitySource from store", zap.String("name", name), zap.Error(err))
-				http.Error(w, "Delete failed", http.StatusInternalServerError)
-				return
-			}
-			mgr.RemoveIdentitySource(name)
-			logger.Info("Deleted IdentitySource", zap.String("name", name))
-			w.WriteHeader(http.StatusOK)
-		}
-	})
-
-	mux.HandleFunc("/apis/lexicore.io/v1/synctargets/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete {
-			name := strings.TrimPrefix(r.URL.Path, "/apis/lexicore.io/v1/synctargets/")
-			if err := db.Delete(ctx, "synctargets", name); err != nil {
-				logger.Error("Failed to delete SyncTarget from store", zap.String("name", name), zap.Error(err))
-				http.Error(w, "Delete failed", http.StatusInternalServerError)
-				return
-			}
-			mgr.RemoveSyncTarget(name)
-			logger.Info("Deleted SyncTarget", zap.String("name", name))
-			w.WriteHeader(http.StatusOK)
-		}
-	})
+func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
+	eCfg := embed.NewConfig()
+	eCfg.Name, eCfg.Dir = c.Name, c.DataDir
+	cu, _ := url.Parse(c.ClientAddr)
+	pu, _ := url.Parse(c.PeerAddr)
+	eCfg.ListenClientUrls, eCfg.AdvertiseClientUrls = []url.URL{*cu}, []url.URL{*cu}
+	eCfg.ListenPeerUrls, eCfg.AdvertisePeerUrls = []url.URL{*pu}, []url.URL{*pu}
+	eCfg.InitialCluster = c.InitialCluster
+	e, err := embed.StartEtcd(eCfg)
+	if err != nil {
+		logger.Fatal("Etcd start fail", zap.Error(err))
+	}
+	<-e.Server.ReadyNotify()
+	return e
 }
 
 func initLogger(c config.LoggingConfig) *zap.Logger {
-	level, _ := zapcore.ParseLevel(c.Level)
-	var zapCfg zap.Config
-
+	lvl, _ := zapcore.ParseLevel(c.Level)
+	cfg := zap.NewProductionConfig()
 	if c.Format == "console" {
-		zapCfg = zap.NewDevelopmentConfig()
-	} else {
-		zapCfg = zap.NewProductionConfig()
+		cfg = zap.NewDevelopmentConfig()
 	}
-
-	zapCfg.Level = zap.NewAtomicLevelAt(level)
-	l, _ := zapCfg.Build()
+	cfg.Level = zap.NewAtomicLevelAt(lvl)
+	l, _ := cfg.Build()
 	return l
-}
-
-func getEtcdMode(c config.EtcdConfig) string {
-	if len(c.Endpoints) > 0 {
-		return "external"
-	}
-	return "embedded-ha"
-}
-
-func renderJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
 }

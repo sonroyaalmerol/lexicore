@@ -25,7 +25,9 @@ func NewEtcdStore(endpoints []string, timeout time.Duration) (*EtcdStore, error)
 	return &EtcdStore{client: cli, prefix: "/lexicore.io"}, nil
 }
 
-func (s *EtcdStore) Put(ctx context.Context, kind string, name string, obj any) error {
+func (s *EtcdStore) Client() *clientv3.Client { return s.client }
+
+func (s *EtcdStore) Put(ctx context.Context, kind, name string, obj any) error {
 	data, err := json.Marshal(obj)
 	if err != nil {
 		return err
@@ -41,23 +43,24 @@ func (s *EtcdStore) List(ctx context.Context, kind string) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var results [][]byte
+	var res [][]byte
 	for _, kv := range resp.Kvs {
-		results = append(results, kv.Value)
+		res = append(res, kv.Value)
 	}
-	return results, nil
+	return res, nil
 }
 
-func (s *EtcdStore) Watch(ctx context.Context, kind string) clientv3.WatchChan {
+func (s *EtcdStore) Watch(ctx context.Context, kind string, rev int64) clientv3.WatchChan {
 	key := fmt.Sprintf("%s/%s/", s.prefix, kind)
-	return s.client.Watch(ctx, key, clientv3.WithPrefix())
+	opts := []clientv3.OpOption{clientv3.WithPrefix()}
+	if rev > 0 {
+		opts = append(opts, clientv3.WithRev(rev))
+	}
+	return s.client.Watch(ctx, key, opts...)
 }
 
-func (s *EtcdStore) Delete(ctx context.Context, kind string, name string) error {
+func (s *EtcdStore) Delete(ctx context.Context, kind, name string) error {
 	key := fmt.Sprintf("%s/%s/%s", s.prefix, kind, name)
 	_, err := s.client.Delete(ctx, key)
-	if err != nil {
-		return fmt.Errorf("failed to delete key %s: %w", key, err)
-	}
-	return nil
+	return err
 }
