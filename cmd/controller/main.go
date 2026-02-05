@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -31,7 +32,6 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/ad"
-	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/caldav"
 	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/dovecot"
 	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/iredadmin"
 	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/ldap"
@@ -69,11 +69,46 @@ func main() {
 		etcdServer = startEmbeddedHA(cfg.Etcd, logger)
 		defer etcdServer.Close()
 
+		logger.Info("Starting auto-discovery of nodes")
 		endpoints = getEtcdEndpoints(cfg.Etcd, logger)
+		logger.Info("Using embedded etcd",
+			zap.Strings("endpoints", endpoints))
 	}
 
 	// Wait a moment for etcd to stabilize
 	time.Sleep(2 * time.Second)
+
+	if etcdServer != nil {
+		snapshotMgr := store.NewSnapshotManager(
+			cfg.Etcd.DataDir,
+			filepath.Join(cfg.Etcd.DataDir, "snapshots"),
+			7*24*time.Hour,
+			logger,
+		)
+
+		go func() {
+			ticker := time.NewTicker(6 * time.Hour)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					snapCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+					_, err := snapshotMgr.TakeSnapshot(snapCtx, endpoints[0])
+					if err != nil {
+						logger.Error("Failed to take snapshot", zap.Error(err))
+					}
+					cancel()
+
+					if err := snapshotMgr.CleanupOldSnapshots(); err != nil {
+						logger.Warn("Failed to cleanup old snapshots", zap.Error(err))
+					}
+				}
+			}
+		}()
+	}
 
 	db, err := store.NewEtcdStore(endpoints, 5*time.Second)
 	if err != nil {
@@ -82,6 +117,10 @@ func main() {
 	defer db.Close()
 
 	mgr := controller.NewManager(cfg, logger)
+
+	if err := loadExistingResources(ctx, db, mgr, logger); err != nil {
+		logger.Fatal("Failed to load existing resources", zap.Error(err))
+	}
 
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	defer cancelWatch()
@@ -121,6 +160,69 @@ func main() {
 	}
 
 	logger.Info("Shutdown complete")
+}
+
+func loadExistingResources(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) error {
+	sources, err := db.List(ctx, "identitysources")
+	if err != nil {
+		return fmt.Errorf("failed to list identity sources: %w", err)
+	}
+
+	for _, data := range sources {
+		var m manifest.IdentitySource
+		if err := json.Unmarshal(data, &m); err != nil {
+			logger.Error("Failed to unmarshal identity source", zap.Error(err))
+			continue
+		}
+
+		src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
+		if err != nil {
+			logger.Error("Failed to create source", zap.String("name", m.Name), zap.Error(err))
+			continue
+		}
+
+		mgr.RegisterSource(m.Name, src)
+		if err := mgr.AddIdentitySource(&m); err != nil {
+			logger.Error("Failed to add identity source", zap.String("name", m.Name), zap.Error(err))
+			continue
+		}
+
+		logger.Info("Loaded identity source", zap.String("name", m.Name))
+	}
+
+	targets, err := db.List(ctx, "synctargets")
+	if err != nil {
+		return fmt.Errorf("failed to list sync targets: %w", err)
+	}
+
+	for _, data := range targets {
+		var m manifest.SyncTarget
+		if err := json.Unmarshal(data, &m); err != nil {
+			logger.Error("Failed to unmarshal sync target", zap.Error(err))
+			continue
+		}
+
+		op, err := operator.Create(m.Spec.Operator)
+		if err != nil {
+			logger.Error("Failed to create operator", zap.String("name", m.Name), zap.Error(err))
+			continue
+		}
+
+		if err := op.Initialize(ctx, m.Spec.Config); err != nil {
+			logger.Error("Failed to initialize operator", zap.String("name", m.Name), zap.Error(err))
+			continue
+		}
+
+		mgr.RegisterOperator(op)
+		if err := mgr.AddSyncTarget(&m); err != nil {
+			logger.Error("Failed to add sync target", zap.String("name", m.Name), zap.Error(err))
+			continue
+		}
+
+		logger.Info("Loaded sync target", zap.String("name", m.Name))
+	}
+
+	return nil
 }
 
 func runWatchLoop(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger, kind string) {
@@ -462,22 +564,22 @@ func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 	eCfg := embed.NewConfig()
 	eCfg.Dir = c.DataDir
-	eCfg.LogLevel = "warn" // Reduce etcd noise in logs
+	eCfg.LogLevel = "warn"
 
 	var nodeName, nodeIP, initialCluster string
 	var clusterState string
+	var disco discovery.Discovery
 
 	if c.AutoJoin {
-		var disco discovery.Discovery
 		var err error
 
 		switch c.Discovery {
 		case "k8s":
 			disco, err = discovery.NewK8sDiscovery()
 		case "gossip":
-			disco, err = discovery.NewGossipDiscovery(c.BindAddr, c.SeedAddrs)
+			disco, err = discovery.NewGossipDiscovery(c.BindAddr, c.SeedAddrs, logger)
 		case "auto":
-			disco, err = discovery.Auto()
+			disco, err = discovery.Auto(logger)
 		default:
 			logger.Fatal("Invalid discovery mode",
 				zap.String("mode", c.Discovery))
@@ -492,10 +594,13 @@ func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 		nodeName = disco.GetNodeName()
 		nodeIP = disco.GetNodeIP()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		// Give gossip time to discover peers
+		time.Sleep(2 * time.Second)
 
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		peers, err := disco.GetPeers(ctx)
+		cancel()
+
 		if err != nil {
 			logger.Warn("Failed to discover peers, starting as new cluster",
 				zap.Error(err))
@@ -503,20 +608,9 @@ func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 		}
 
 		selfPeer := fmt.Sprintf("%s=http://%s:2380", nodeName, nodeIP)
+		existingCluster := shouldJoinExisting(selfPeer, peers, c.DataDir, logger)
 
-		if len(peers) > 0 {
-			found := false
-			for _, peer := range peers {
-				if peer == selfPeer {
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				peers = append(peers, selfPeer)
-			}
-
+		if existingCluster {
 			initialCluster = strings.Join(peers, ",")
 			clusterState = "existing"
 
@@ -532,10 +626,6 @@ func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 			logger.Info("Starting new cluster",
 				zap.String("node", nodeName),
 				zap.String("ip", nodeIP))
-		}
-
-		if g, ok := disco.(*discovery.GossipDiscovery); ok {
-			defer g.Close()
 		}
 	} else {
 		nodeName = c.Name
@@ -608,7 +698,38 @@ func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 		logger.Fatal("Etcd stopped unexpectedly during startup")
 	}
 
+	if c.AutoJoin {
+		if dynDisco, ok := disco.(discovery.DynamicDiscovery); ok {
+			mgr, err := discovery.NewEtcdMembershipManager(e, dynDisco, nodeName, logger)
+			if err != nil {
+				logger.Fatal("Failed to create membership manager", zap.Error(err))
+			}
+
+			ctx := context.Background()
+			if err := mgr.Start(ctx); err != nil {
+				logger.Fatal("Failed to start membership manager", zap.Error(err))
+			}
+		}
+	}
+
 	return e
+}
+
+func shouldJoinExisting(selfPeer string, peers []string, dataDir string, logger *zap.Logger) bool {
+	memberDir := filepath.Join(dataDir, "member")
+	if info, err := os.Stat(memberDir); err == nil && info.IsDir() {
+		logger.Info("Found existing member data, restarting")
+		return true
+	}
+
+	otherPeers := 0
+	for _, peer := range peers {
+		if peer != selfPeer {
+			otherPeers++
+		}
+	}
+
+	return otherPeers > 0
 }
 
 func getEtcdEndpoints(cfg config.EtcdConfig, logger *zap.Logger) []string {

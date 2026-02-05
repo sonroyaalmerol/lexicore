@@ -12,6 +12,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	go.etcd.io/etcd/api/v3 v3.6.7
 	go.etcd.io/etcd/client/v3 v3.6.7
+	go.etcd.io/etcd/etcdutl/v3 v3.6.7
 	go.etcd.io/etcd/server/v3 v3.6.7
 	go.uber.org/zap v1.27.1
 	goauthentik.io/api/v3 v3.2026020.14

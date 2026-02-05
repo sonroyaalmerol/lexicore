@@ -120,7 +120,6 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
 	addReq := ldap.NewAddRequest(dn, nil)
 
-	// Default object classes for a generic user
 	classes := []string{"top", "person", "organizationalPerson", "inetOrgPerson"}
 	if customClasses, ok := o.GetConfig("objectClasses"); ok {
 		if c, ok := customClasses.([]string); ok {
@@ -129,14 +128,12 @@ func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
 	}
 	addReq.Attribute("objectClass", classes)
 
-	// Standard attributes
 	addReq.Attribute("cn", []string{id.Username})
 	addReq.Attribute("sn", []string{id.Username})
 	if id.Email != "" {
 		addReq.Attribute("mail", []string{id.Email})
 	}
 
-	// Dynamic attributes from Lexicore
 	for k, v := range id.Attributes {
 		if strings.HasPrefix(k, "ldap:") {
 			attrName := k[5:] // "ldap:" is 5 bytes

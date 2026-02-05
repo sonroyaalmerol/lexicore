@@ -22,12 +22,12 @@ func (m *mockSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockSource) GetIdentities(ctx context.Context) ([]Identity, error) {
-	return []Identity{}, nil
+func (m *mockSource) GetIdentities(ctx context.Context) (map[string]Identity, error) {
+	return map[string]Identity{}, nil
 }
 
-func (m *mockSource) GetGroups(ctx context.Context) ([]Group, error) {
-	return []Group{}, nil
+func (m *mockSource) GetGroups(ctx context.Context) (map[string]Group, error) {
+	return map[string]Group{}, nil
 }
 
 func (m *mockSource) Watch(ctx context.Context) (<-chan Event, error) {

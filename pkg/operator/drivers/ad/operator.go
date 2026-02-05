@@ -69,7 +69,6 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*oper
 	}
 	userBaseDN, _ := o.GetStringConfig("userBaseDN")
 
-	// Iterate over map directly
 	for uid, id := range state.Identities {
 		dn := o.buildDN(id, userBaseDN)
 
