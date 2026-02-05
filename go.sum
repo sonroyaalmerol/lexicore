@@ -283,8 +283,6 @@ go.etcd.io/etcd/client/pkg/v3 v3.6.7 h1:vvzgyozz46q+TyeGBuFzVuI53/yd133CHceNb/Ah
 go.etcd.io/etcd/client/pkg/v3 v3.6.7/go.mod h1:2IVulJ3FZ/czIGl9T4lMF1uxzrhRahLqe+hSgy+Kh7Q=
 go.etcd.io/etcd/client/v3 v3.6.7 h1:9WqA5RpIBtdMxAy1ukXLAdtg2pAxNqW5NUoO2wQrE6U=
 go.etcd.io/etcd/client/v3 v3.6.7/go.mod h1:2XfROY56AXnUqGsvl+6k29wrwsSbEh1lAouQB1vHpeE=
-go.etcd.io/etcd/etcdutl/v3 v3.6.7 h1:oo3LaGNwpcsRUhG9VHbA72S299WenTcAMMdLkL2L+nc=
-go.etcd.io/etcd/etcdutl/v3 v3.6.7/go.mod h1:HrPwZQEQU/YE+1sWeingB5ocabp28WaP+IgTav4K4bw=
 go.etcd.io/etcd/pkg/v3 v3.6.7 h1:qIxdSI+LAmKFAjMy42yHQzSNqG/sWES4QjhFSGsMDpY=
 go.etcd.io/etcd/pkg/v3 v3.6.7/go.mod h1:nPbpIExp9Q6tR/EVI2aZe0VBlflLys5VGFWSCmqUOyk=
 go.etcd.io/etcd/server/v3 v3.6.7 h1:8dEGQ877tj0cQJFEfD2bDoZDA76qbS2OkvCNjwAyrSo=
