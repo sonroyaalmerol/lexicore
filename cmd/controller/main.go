@@ -57,12 +57,14 @@ func main() {
 	defer stop()
 
 	var endpoints []string
+	var etcdServer *embed.Etcd
+
 	if len(cfg.Etcd.Endpoints) > 0 {
 		endpoints = cfg.Etcd.Endpoints
 		logger.Info("Using external etcd", zap.Strings("endpoints", endpoints))
 	} else {
-		e := startEmbeddedHA(cfg.Etcd, logger)
-		defer e.Close()
+		etcdServer = startEmbeddedHA(cfg.Etcd, logger)
+		defer etcdServer.Close()
 		endpoints = []string{cfg.Etcd.ClientAddr}
 		logger.Info("Using embedded etcd", zap.String("addr", cfg.Etcd.ClientAddr))
 	}
@@ -71,11 +73,16 @@ func main() {
 	if err != nil {
 		logger.Fatal("Store init failed", zap.Error(err))
 	}
+	defer db.Close()
 
 	mgr := controller.NewManager(cfg, logger)
 
-	go runWatchLoop(ctx, db, mgr, logger, "identitysources")
-	go runWatchLoop(ctx, db, mgr, logger, "synctargets")
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
+
+	go runWatchLoop(watchCtx, db, mgr, logger, "identitysources")
+	go runWatchLoop(watchCtx, db, mgr, logger, "synctargets")
+
 	go runLeaderElection(ctx, db, mgr, cfg.Etcd.Name, logger)
 
 	mux := http.NewServeMux()
@@ -90,22 +97,34 @@ func main() {
 	}
 
 	go func() {
+		logger.Info("Starting HTTP server", zap.String("addr", cfg.Server.Address))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("Server failed", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
+	logger.Info("Shutting down...")
+
+	cancelWatch()
+
 	sCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	srv.Shutdown(sCtx)
+	if err := srv.Shutdown(sCtx); err != nil {
+		logger.Error("Server shutdown failed", zap.Error(err))
+	}
+
+	logger.Info("Shutdown complete")
 }
 
 func runWatchLoop(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger, kind string) {
+	logger = logger.With(zap.String("kind", kind))
 	var rev int64 = 0
+
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Info("Watch loop stopping")
 			return
 		default:
 			wch := db.Watch(ctx, kind, rev)
@@ -114,15 +133,24 @@ func runWatchLoop(ctx context.Context, db *store.EtcdStore, mgr *controller.Mana
 					if resp.Err() == rpctypes.ErrCompacted {
 						rev = resp.CompactRevision
 						logger.Warn("Watch compacted, resetting revision", zap.Int64("rev", rev))
+					} else {
+						logger.Error("Watch canceled", zap.Error(resp.Err()))
 					}
 					break
 				}
+
 				for _, ev := range resp.Events {
 					rev = ev.Kv.ModRevision + 1
 					handleStoreEvent(ctx, mgr, kind, ev, logger)
 				}
 			}
-			time.Sleep(time.Second)
+
+			// Check context before sleeping
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
 		}
 	}
 }
@@ -143,23 +171,49 @@ func handleStoreEvent(ctx context.Context, mgr *controller.Manager, kind string,
 
 	if kind == "identitysources" {
 		var m manifest.IdentitySource
-		if err := json.Unmarshal(ev.Kv.Value, &m); err == nil {
-			if src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config); err == nil {
-				mgr.RegisterSource(m.Name, src)
-				mgr.AddIdentitySource(&m)
-				logger.Info("Resource updated", zap.String("kind", kind), zap.String("name", name))
-			}
+		if err := json.Unmarshal(ev.Kv.Value, &m); err != nil {
+			logger.Error("Failed to unmarshal identity source", zap.String("name", name), zap.Error(err))
+			return
 		}
+
+		src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
+		if err != nil {
+			logger.Error("Failed to create source", zap.String("name", name), zap.Error(err))
+			return
+		}
+
+		mgr.RegisterSource(m.Name, src)
+		if err := mgr.AddIdentitySource(&m); err != nil {
+			logger.Error("Failed to add identity source", zap.String("name", name), zap.Error(err))
+			return
+		}
+
+		logger.Info("Identity source updated", zap.String("name", name))
 	} else {
 		var m manifest.SyncTarget
 		if err := json.Unmarshal(ev.Kv.Value, &m); err != nil {
-			if op, err := operator.Create(m.Spec.Operator); err == nil {
-				op.Initialize(ctx, m.Spec.Config)
-				mgr.RegisterOperator(op)
-				mgr.AddSyncTarget(&m)
-				logger.Info("Resource updated", zap.String("kind", kind), zap.String("name", name))
-			}
+			logger.Error("Failed to unmarshal sync target", zap.String("name", name), zap.Error(err))
+			return
 		}
+
+		op, err := operator.Create(m.Spec.Operator)
+		if err != nil {
+			logger.Error("Failed to create operator", zap.String("name", name), zap.Error(err))
+			return
+		}
+
+		if err := op.Initialize(ctx, m.Spec.Config); err != nil {
+			logger.Error("Failed to initialize operator", zap.String("name", name), zap.Error(err))
+			return
+		}
+
+		mgr.RegisterOperator(op)
+		if err := mgr.AddSyncTarget(&m); err != nil {
+			logger.Error("Failed to add sync target", zap.String("name", name), zap.Error(err))
+			return
+		}
+
+		logger.Info("Sync target updated", zap.String("name", name))
 	}
 }
 
@@ -167,6 +221,7 @@ func runLeaderElection(ctx context.Context, db *store.EtcdStore, mgr *controller
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Info("Leader election stopping")
 			return
 		default:
 			session, err := concurrency.NewSession(db.Client(), concurrency.WithTTL(15))
@@ -178,12 +233,16 @@ func runLeaderElection(ctx context.Context, db *store.EtcdStore, mgr *controller
 
 			election := concurrency.NewElection(session, "/lexicore/leader")
 			if err := election.Campaign(ctx, nodeName); err != nil {
+				logger.Debug("Campaign failed, retrying", zap.Error(err))
 				session.Close()
+				time.Sleep(time.Second)
 				continue
 			}
 
-			logger.Info("Node acquired leadership")
+			logger.Info("Node acquired leadership", zap.String("node", nodeName))
+
 			runCtx, cancel := context.WithCancel(ctx)
+
 			go func() {
 				select {
 				case <-session.Done():
@@ -194,77 +253,240 @@ func runLeaderElection(ctx context.Context, db *store.EtcdStore, mgr *controller
 			}()
 
 			if err := mgr.Start(runCtx); err != nil {
-				logger.Error("Manager stopped", zap.Error(err))
+				logger.Error("Manager stopped with error", zap.Error(err))
 			}
+
+			cancel()
 			session.Close()
+
+			logger.Info("Leadership released")
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				time.Sleep(time.Second)
+			}
 		}
 	}
 }
 
 func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) {
 	p := manifest.NewParser()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
 
 	mux.HandleFunc("/apis/lexicore.io/v1/identitysources", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(mgr.GetIdentitySources())
-			return
-		}
-		if r.Method == http.MethodPost {
-			b, _ := io.ReadAll(r.Body)
+			if err := json.NewEncoder(w).Encode(mgr.GetIdentitySources()); err != nil {
+				logger.Error("Failed to encode response", zap.Error(err))
+				http.Error(w, "Internal error", http.StatusInternalServerError)
+			}
+
+		case http.MethodPost:
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Failed to read body", http.StatusBadRequest)
+				return
+			}
+
 			m, err := p.Parse(b)
 			if err != nil {
-				http.Error(w, "Invalid manifest", 400)
+				logger.Error("Failed to parse manifest", zap.Error(err))
+				http.Error(w, "Invalid manifest", http.StatusBadRequest)
 				return
 			}
-			src := m.(*manifest.IdentitySource)
+
+			src, ok := m.(*manifest.IdentitySource)
+			if !ok {
+				http.Error(w, "Invalid manifest type", http.StatusBadRequest)
+				return
+			}
+
 			if err := db.Put(ctx, "identitysources", src.Name, src); err != nil {
 				logger.Error("Store put failed", zap.Error(err))
-				http.Error(w, "Store error", 500)
+				http.Error(w, "Store error", http.StatusInternalServerError)
 				return
 			}
-			w.WriteHeader(201)
+
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": src.Name})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 
 	mux.HandleFunc("/apis/lexicore.io/v1/synctargets", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(mgr.GetSyncTargets())
-			return
-		}
-		if r.Method == http.MethodPost {
-			b, _ := io.ReadAll(r.Body)
+			if err := json.NewEncoder(w).Encode(mgr.GetSyncTargets()); err != nil {
+				logger.Error("Failed to encode response", zap.Error(err))
+				http.Error(w, "Internal error", http.StatusInternalServerError)
+			}
+
+		case http.MethodPost:
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Failed to read body", http.StatusBadRequest)
+				return
+			}
+
 			m, err := p.Parse(b)
 			if err != nil {
-				http.Error(w, "Invalid manifest", 400)
+				logger.Error("Failed to parse manifest", zap.Error(err))
+				http.Error(w, "Invalid manifest", http.StatusBadRequest)
 				return
 			}
-			target := m.(*manifest.SyncTarget)
+
+			target, ok := m.(*manifest.SyncTarget)
+			if !ok {
+				http.Error(w, "Invalid manifest type", http.StatusBadRequest)
+				return
+			}
+
 			if err := db.Put(ctx, "synctargets", target.Name, target); err != nil {
 				logger.Error("Store put failed", zap.Error(err))
-				http.Error(w, "Store error", 500)
+				http.Error(w, "Store error", http.StatusInternalServerError)
 				return
 			}
-			w.WriteHeader(201)
+
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": target.Name})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/apis/lexicore.io/v1/synctargets/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/apis/lexicore.io/v1/synctargets/")
+		parts := strings.Split(path, "/")
+
+		if len(parts) != 2 || parts[1] != "reconcile" {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
+		targetName := parts[0]
+		if targetName == "" {
+			http.Error(w, "Target name required", http.StatusBadRequest)
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		logger.Info("Manual reconciliation triggered",
+			zap.String("target", targetName),
+			zap.String("remote_addr", r.RemoteAddr))
+
+		if err := mgr.TriggerReconciliation(targetName); err != nil {
+			logger.Error("Failed to trigger reconciliation",
+				zap.String("target", targetName),
+				zap.Error(err))
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "error",
+				"error":  err.Error(),
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "queued",
+			"target": targetName,
+		})
+	})
+
+	mux.HandleFunc("/apis/lexicore.io/v1/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		logger.Info("Bulk reconciliation triggered", zap.String("remote_addr", r.RemoteAddr))
+
+		targets := mgr.GetSyncTargets()
+		queued := 0
+		failed := []string{}
+
+		for _, target := range targets {
+			if err := mgr.TriggerReconciliation(target.Name); err != nil {
+				logger.Warn("Failed to queue target for reconciliation",
+					zap.String("target", target.Name),
+					zap.Error(err))
+				failed = append(failed, target.Name)
+			} else {
+				queued++
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if len(failed) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "queued",
+				"count":  queued,
+			})
+		} else {
+			w.WriteHeader(http.StatusPartialContent)
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "partial",
+				"queued": queued,
+				"failed": failed,
+			})
 		}
 	})
 }
 
 func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 	eCfg := embed.NewConfig()
-	eCfg.Name, eCfg.Dir = c.Name, c.DataDir
-	cu, _ := url.Parse(c.ClientAddr)
-	pu, _ := url.Parse(c.PeerAddr)
-	eCfg.ListenClientUrls, eCfg.AdvertiseClientUrls = []url.URL{*cu}, []url.URL{*cu}
-	eCfg.ListenPeerUrls, eCfg.AdvertisePeerUrls = []url.URL{*pu}, []url.URL{*pu}
+	eCfg.Name = c.Name
+	eCfg.Dir = c.DataDir
+
+	cu, err := url.Parse(c.ClientAddr)
+	if err != nil {
+		logger.Fatal("Invalid client URL", zap.Error(err))
+	}
+
+	pu, err := url.Parse(c.PeerAddr)
+	if err != nil {
+		logger.Fatal("Invalid peer URL", zap.Error(err))
+	}
+
+	eCfg.ListenClientUrls = []url.URL{*cu}
+	eCfg.AdvertiseClientUrls = []url.URL{*cu}
+	eCfg.ListenPeerUrls = []url.URL{*pu}
+	eCfg.AdvertisePeerUrls = []url.URL{*pu}
 	eCfg.InitialCluster = c.InitialCluster
+
 	e, err := embed.StartEtcd(eCfg)
 	if err != nil {
-		logger.Fatal("Etcd start fail", zap.Error(err))
+		logger.Fatal("Etcd start failed", zap.Error(err))
 	}
-	<-e.Server.ReadyNotify()
+
+	select {
+	case <-e.Server.ReadyNotify():
+		logger.Info("Embedded etcd ready")
+	case <-time.After(60 * time.Second):
+		e.Close()
+		logger.Fatal("Etcd failed to become ready")
+	}
+
 	return e
 }
 

@@ -16,11 +16,11 @@ func TestReconciler_Reconcile(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{UID: "1", Username: "user1", Email: "user1@example.com"},
+		identities: map[string]source.Identity{
+			"1": {UID: "1", Username: "user1", Email: "user1@example.com"},
 		},
-		groups: []source.Group{
-			{GID: "1", Name: "admins"},
+		groups: map[string]source.Group{
+			"1": {GID: "1", Name: "admins"},
 		},
 	}
 
@@ -47,8 +47,8 @@ func TestReconciler_Reconcile(t *testing.T) {
 func TestReconciler_Reconcile_NoChanges(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
-	identities := []source.Identity{
-		{UID: "1", Username: "user1", Email: "user1@example.com"},
+	identities := map[string]source.Identity{
+		"1": {UID: "1", Username: "user1", Email: "user1@example.com"},
 	}
 
 	src := &mockSource{identities: identities}

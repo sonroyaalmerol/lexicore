@@ -20,19 +20,19 @@ func TestTemplateTransformer_BasicTemplate(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username:   "john",
 			Attributes: make(map[string]any),
 		},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
-	assert.Equal(t, "john@example.com", transformed[0].Attributes["fullEmail"])
-	assert.Equal(t, "/var/mail/john", transformed[0].Attributes["maildir"])
+	assert.Equal(t, "john@example.com", transformed["john"].Attributes["fullEmail"])
+	assert.Equal(t, "/var/mail/john", transformed["john"].Attributes["maildir"])
 }
 
 func TestTemplateTransformer_MultipleFields(t *testing.T) {
@@ -45,8 +45,8 @@ func TestTemplateTransformer_MultipleFields(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username:   "john",
 			Email:      "john@example.com",
 			Attributes: make(map[string]any),
@@ -54,13 +54,13 @@ func TestTemplateTransformer_MultipleFields(t *testing.T) {
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Equal(
 		t,
 		"john (john@example.com)",
-		transformed[0].Attributes["displayName"],
+		transformed["john"].Attributes["displayName"],
 	)
 }
 
@@ -74,8 +74,8 @@ func TestTemplateTransformer_AttributeAccess(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username: "john",
 			Attributes: map[string]any{
 				"department": "Engineering",
@@ -84,13 +84,13 @@ func TestTemplateTransformer_AttributeAccess(t *testing.T) {
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Equal(
 		t,
 		"User john from Engineering",
-		transformed[0].Attributes["summary"],
+		transformed["john"].Attributes["summary"],
 	)
 }
 
@@ -100,8 +100,8 @@ func TestTemplateTransformer_EmptyConfig(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username: "john",
 			Attributes: map[string]any{
 				"existing": "value",
@@ -110,10 +110,10 @@ func TestTemplateTransformer_EmptyConfig(t *testing.T) {
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
-	assert.Equal(t, "value", transformed[0].Attributes["existing"])
+	assert.Equal(t, "value", transformed["john"].Attributes["existing"])
 }
 
 func TestTemplateTransformer_InvalidTemplate(t *testing.T) {
@@ -155,19 +155,19 @@ func TestTemplateTransformer_NilAttributes(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username:   "john",
 			Attributes: nil,
 		},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
-	require.NotNil(t, transformed[0].Attributes)
-	assert.Equal(t, "john@example.com", transformed[0].Attributes["email"])
+	require.NotNil(t, transformed["john"].Attributes)
+	assert.Equal(t, "john@example.com", transformed["john"].Attributes["email"])
 }
 
 func TestTemplateTransformer_MultipleIdentities(t *testing.T) {
@@ -180,20 +180,20 @@ func TestTemplateTransformer_MultipleIdentities(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{Username: "john", Attributes: make(map[string]any)},
-		{Username: "jane", Attributes: make(map[string]any)},
-		{Username: "bob", Attributes: make(map[string]any)},
+	identities := map[string]source.Identity{
+		"john": {Username: "john", Attributes: make(map[string]any)},
+		"jane": {Username: "jane", Attributes: make(map[string]any)},
+		"bob":  {Username: "bob", Attributes: make(map[string]any)},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Len(t, transformed, 3)
-	assert.Equal(t, "john@example.com", transformed[0].Attributes["email"])
-	assert.Equal(t, "jane@example.com", transformed[1].Attributes["email"])
-	assert.Equal(t, "bob@example.com", transformed[2].Attributes["email"])
+	assert.Equal(t, "john@example.com", transformed["john"].Attributes["email"])
+	assert.Equal(t, "jane@example.com", transformed["jane"].Attributes["email"])
+	assert.Equal(t, "bob@example.com", transformed["bob"].Attributes["email"])
 }
 
 func TestTemplateTransformer_ComplexTemplate(t *testing.T) {
@@ -206,8 +206,8 @@ func TestTemplateTransformer_ComplexTemplate(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username: "john",
 			Attributes: map[string]any{
 				"project": "myapp",
@@ -216,10 +216,10 @@ func TestTemplateTransformer_ComplexTemplate(t *testing.T) {
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
-	assert.Equal(t, "/home/john/myapp/data", transformed[0].Attributes["path"])
+	assert.Equal(t, "/home/john/myapp/data", transformed["john"].Attributes["path"])
 }
 
 func TestTemplateTransformer_OverwriteExisting(t *testing.T) {
@@ -232,8 +232,8 @@ func TestTemplateTransformer_OverwriteExisting(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username: "john",
 			Attributes: map[string]any{
 				"email": "john@olddomain.com",
@@ -242,12 +242,12 @@ func TestTemplateTransformer_OverwriteExisting(t *testing.T) {
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Equal(
 		t,
 		"john@newdomain.com",
-		transformed[0].Attributes["email"],
+		transformed["john"].Attributes["email"],
 	)
 }

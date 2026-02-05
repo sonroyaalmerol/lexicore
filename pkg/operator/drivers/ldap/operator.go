@@ -63,27 +63,36 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 	}
 	defer o.Close()
 
-	res := &operator.SyncResult{}
+	res := &operator.SyncResult{
+		Errors: make([]error, 0, len(state.Identities)/10),
+	}
+
 	userBaseDN, _ := o.GetStringConfig("userBaseDN")
-	rdnAttr, _ := o.GetStringConfig("rdnAttribute") // e.g., "uid" or "cn"
+	rdnAttr, _ := o.GetStringConfig("rdnAttribute")
 	if rdnAttr == "" {
 		rdnAttr = "uid"
 	}
 
-	for _, id := range state.Identities {
-		// Construct DN using the RDN attribute (usually uid=username)
+	for uid, id := range state.Identities {
 		rdnValue := id.Username
 		if id.UID != "" {
 			rdnValue = id.UID
 		}
-		dn := fmt.Sprintf("%s=%s,%s", rdnAttr, rdnValue, userBaseDN)
+
+		var dnBuilder strings.Builder
+		dnBuilder.Grow(len(rdnAttr) + 1 + len(rdnValue) + 1 + len(userBaseDN))
+		dnBuilder.WriteString(rdnAttr)
+		dnBuilder.WriteByte('=')
+		dnBuilder.WriteString(rdnValue)
+		dnBuilder.WriteByte(',')
+		dnBuilder.WriteString(userBaseDN)
+		dn := dnBuilder.String()
 
 		if state.DryRun {
 			res.IdentitiesUpdated++
 			continue
 		}
 
-		// Search for existing entry
 		search := ldap.NewSearchRequest(
 			dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases,
 			0, 0, false, "(objectClass=*)", []string{"dn"}, nil,
@@ -91,14 +100,14 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 		sr, err := o.conn.Search(search)
 
 		if err != nil || len(sr.Entries) == 0 {
-			if err := o.createEntry(dn, id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("create %s failed: %w", dn, err))
+			if err := o.createEntry(dn, &id); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("create %s (uid: %s) failed: %w", dn, uid, err))
 			} else {
 				res.IdentitiesCreated++
 			}
 		} else {
-			if err := o.updateEntry(dn, id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("update %s failed: %w", dn, err))
+			if err := o.updateEntry(dn, &id); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("update %s (uid: %s) failed: %w", dn, uid, err))
 			} else {
 				res.IdentitiesUpdated++
 			}
@@ -108,7 +117,7 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 	return res, nil
 }
 
-func (o *LDAPOperator) createEntry(dn string, id source.Identity) error {
+func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
 	addReq := ldap.NewAddRequest(dn, nil)
 
 	// Default object classes for a generic user
@@ -122,7 +131,7 @@ func (o *LDAPOperator) createEntry(dn string, id source.Identity) error {
 
 	// Standard attributes
 	addReq.Attribute("cn", []string{id.Username})
-	addReq.Attribute("sn", []string{id.Username}) // sn is required by person class
+	addReq.Attribute("sn", []string{id.Username})
 	if id.Email != "" {
 		addReq.Attribute("mail", []string{id.Email})
 	}
@@ -130,7 +139,7 @@ func (o *LDAPOperator) createEntry(dn string, id source.Identity) error {
 	// Dynamic attributes from Lexicore
 	for k, v := range id.Attributes {
 		if strings.HasPrefix(k, "ldap:") {
-			attrName := strings.TrimPrefix(k, "ldap:")
+			attrName := k[5:] // "ldap:" is 5 bytes
 			addReq.Attribute(attrName, []string{fmt.Sprintf("%v", v)})
 		}
 	}
@@ -138,13 +147,13 @@ func (o *LDAPOperator) createEntry(dn string, id source.Identity) error {
 	return o.conn.Add(addReq)
 }
 
-func (o *LDAPOperator) updateEntry(dn string, id source.Identity) error {
+func (o *LDAPOperator) updateEntry(dn string, id *source.Identity) error {
 	modReq := ldap.NewModifyRequest(dn, nil)
 	hasChanges := false
 
 	for k, v := range id.Attributes {
 		if strings.HasPrefix(k, "ldap:") {
-			attrName := strings.TrimPrefix(k, "ldap:")
+			attrName := k[5:]
 			modReq.Replace(attrName, []string{fmt.Sprintf("%v", v)})
 			hasChanges = true
 		}

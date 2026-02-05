@@ -18,19 +18,19 @@ func TestSelectorTransformer_Transform(t *testing.T) {
 	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{Username: "user1", Groups: []string{"admins", "users"}},
-		{Username: "user2", Groups: []string{"users"}},
-		{Username: "user3", Groups: []string{"admins"}},
+	identities := map[string]source.Identity{
+		"user1": {Username: "user1", Groups: []string{"admins", "users"}},
+		"user2": {Username: "user2", Groups: []string{"users"}},
+		"user3": {Username: "user3", Groups: []string{"admins"}},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	selectored, _, err := ft.Transform(ctx, identities, []source.Group{})
+	selectored, _, err := ft.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Len(t, selectored, 2)
-	assert.Equal(t, "user1", selectored[0].Username)
-	assert.Equal(t, "user3", selectored[1].Username)
+	assert.Contains(t, selectored, "user1")
+	assert.Contains(t, selectored, "user3")
 }
 
 func TestTemplateTransformer_Transform(t *testing.T) {
@@ -44,19 +44,19 @@ func TestTemplateTransformer_Transform(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"john": {
 			Username:   "john",
 			Attributes: make(map[string]any),
 		},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	transformed, _, err := tt.Transform(ctx, identities, []source.Group{})
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
-	assert.Equal(t, "john@example.com", transformed[0].Attributes["fullEmail"])
-	assert.Equal(t, "/var/mail/john", transformed[0].Attributes["maildir"])
+	assert.Equal(t, "john@example.com", transformed["john"].Attributes["fullEmail"])
+	assert.Equal(t, "/var/mail/john", transformed["john"].Attributes["maildir"])
 }
 
 func TestPipeline_Execute(t *testing.T) {
@@ -73,15 +73,15 @@ func TestPipeline_Execute(t *testing.T) {
 	pipeline, err := NewPipeline(configs)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{Username: "user1", Groups: []string{"admins"}, Attributes: make(map[string]any)},
-		{Username: "user2", Groups: []string{"users"}, Attributes: make(map[string]any)},
+	identities := map[string]source.Identity{
+		"user1": {Username: "user1", Groups: []string{"admins"}, Attributes: make(map[string]any)},
+		"user2": {Username: "user2", Groups: []string{"users"}, Attributes: make(map[string]any)},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	result, _, err := pipeline.Execute(ctx, identities, []source.Group{})
+	result, _, err := pipeline.Execute(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Len(t, result, 1)
-	assert.Equal(t, "user1", result[0].Username)
+	assert.Contains(t, result, "user1")
 }

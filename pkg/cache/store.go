@@ -1,98 +1,104 @@
 package cache
 
 import (
-	"crypto/sha256"
-	"encoding/json"
-	"fmt"
 	"sync"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
+	"github.com/gohugoio/hashstructure"
 )
 
 type Store struct {
 	name       string
-	identities map[string]source.Identity
-	groups     map[string]source.Group
+	identities map[string]uint64
+	groups     map[string]uint64
 	mu         sync.RWMutex
 }
 
 func NewStore(name string) *Store {
 	return &Store{
 		name:       name,
-		identities: make(map[string]source.Identity),
-		groups:     make(map[string]source.Group),
+		identities: make(map[string]uint64),
+		groups:     make(map[string]uint64),
 	}
 }
 
-func (s *Store) GetIdentities() []source.Identity {
+func (s *Store) GetIdentityHash(key string) (uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	identities := make([]source.Identity, 0, len(s.identities))
-	for _, identity := range s.identities {
-		identities = append(identities, identity)
-	}
-	return identities
+	hash, ok := s.identities[key]
+	return hash, ok
 }
 
-func (s *Store) GetIdentity(key string) (source.Identity, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	identity, ok := s.identities[key]
-	return identity, ok
-}
-
-func (s *Store) UpdateIdentities(identities []source.Identity) {
+func (s *Store) UpdateIdentities(identities map[string]source.Identity) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.identities = make(map[string]source.Identity)
-	for _, identity := range identities {
-		key := identityKey(identity)
-		s.identities[key] = identity
+	s.identities = make(map[string]uint64, len(identities))
+	for key, identity := range identities {
+		hash, err := hashstructure.Hash(identity, nil)
+		if err != nil {
+			return err
+		}
+		s.identities[key] = hash
 	}
+	return nil
 }
 
-func (s *Store) GetGroups() []source.Group {
+func (s *Store) GetGroupHash(key string) (uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	groups := make([]source.Group, 0, len(s.groups))
-	for _, group := range s.groups {
-		groups = append(groups, group)
-	}
-	return groups
+	hash, ok := s.groups[key]
+	return hash, ok
 }
 
-func (s *Store) GetGroup(key string) (source.Group, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	group, ok := s.groups[key]
-	return group, ok
-}
-
-func (s *Store) UpdateGroups(groups []source.Group) {
+func (s *Store) UpdateGroups(groups map[string]source.Group) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.groups = make(map[string]source.Group)
-	for _, group := range groups {
-		key := groupKey(group)
-		s.groups[key] = group
+	s.groups = make(map[string]uint64, len(groups))
+	for key, group := range groups {
+		hash, err := hashstructure.Hash(group, nil)
+		if err != nil {
+			return err
+		}
+		s.groups[key] = hash
 	}
+	return nil
+}
+
+func (s *Store) GetIdentityKeys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]string, 0, len(s.identities))
+	for key := range s.identities {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (s *Store) GetGroupKeys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]string, 0, len(s.groups))
+	for key := range s.groups {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.identities = make(map[string]source.Identity)
-	s.groups = make(map[string]source.Group)
+	s.identities = make(map[string]uint64)
+	s.groups = make(map[string]uint64)
 }
 
-func identityKey(identity source.Identity) string {
+func IdentityKey(identity source.Identity) string {
 	if identity.UID != "" {
 		return identity.UID
 	}
@@ -102,21 +108,9 @@ func identityKey(identity source.Identity) string {
 	return identity.Email
 }
 
-func groupKey(group source.Group) string {
+func GroupKey(group source.Group) string {
 	if group.GID != "" {
 		return group.GID
 	}
 	return group.Name
-}
-
-func HashIdentity(identity source.Identity) string {
-	data, _ := json.Marshal(identity)
-	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash)
-}
-
-func HashGroup(group source.Group) string {
-	data, _ := json.Marshal(group)
-	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash)
 }

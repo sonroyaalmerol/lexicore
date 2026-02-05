@@ -8,7 +8,7 @@ import (
 
 type SelectorTransformer struct {
 	groupSelector string
-	emailDomain     string
+	emailDomain   string
 }
 
 func NewSelectorTransformer(config map[string]any) (*SelectorTransformer, error) {
@@ -27,24 +27,26 @@ func NewSelectorTransformer(config map[string]any) (*SelectorTransformer, error)
 
 func (f *SelectorTransformer) Transform(
 	ctx *Context,
-	identities []source.Identity,
-	groups []source.Group,
-) ([]source.Identity, []source.Group, error) {
-	filtered := make([]source.Identity, 0)
-
-	for _, identity := range identities {
-		if f.shouldInclude(identity) {
-			filtered = append(filtered, identity)
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
+) (map[string]source.Identity, map[string]source.Group, error) {
+	for key, identity := range identities {
+		if !f.shouldIncludeUser(identity) {
+			delete(identities, key)
+		}
+	}
+	for key, group := range groups {
+		if !f.shouldIncludeGroup(group) {
+			delete(groups, key)
 		}
 	}
 
-	return filtered, groups, nil
+	return identities, groups, nil
 }
 
-func (f *SelectorTransformer) shouldInclude(identity source.Identity) bool {
+func (f *SelectorTransformer) shouldIncludeUser(identity source.Identity) bool {
 	if f.groupSelector != "" {
-		hasGroup := slices.Contains(identity.Groups, f.groupSelector)
-		if !hasGroup {
+		if !slices.Contains(identity.Groups, f.groupSelector) {
 			return false
 		}
 	}
@@ -52,6 +54,16 @@ func (f *SelectorTransformer) shouldInclude(identity source.Identity) bool {
 	if f.emailDomain != "" {
 		// Check email domain
 		// Implementation here
+	}
+
+	return true
+}
+
+func (f *SelectorTransformer) shouldIncludeGroup(group source.Group) bool {
+	if f.groupSelector != "" {
+		if group.Name != f.groupSelector {
+			return false
+		}
 	}
 
 	return true

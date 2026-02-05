@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
@@ -44,17 +45,19 @@ func (o *DovecotOperator) Validate(ctx context.Context) error {
 }
 
 func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
-	result := &operator.SyncResult{}
+	result := &operator.SyncResult{
+		Errors: make([]error, 0, len(state.Identities)/10),
+	}
 	apiURL, _ := o.GetStringConfig("url")
 
-	for _, identity := range state.Identities {
+	for uid, identity := range state.Identities {
 		err := o.exec(ctx, apiURL, identity.Username, "mailboxCreate", map[string]any{
 			"user":    identity.Username,
-			"mailbox": "INBOX", // Ensure at least INBOX exists
+			"mailbox": "INBOX",
 		}, state.DryRun)
 
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("user %s mailbox init failed: %w", identity.Username, err))
+			result.Errors = append(result.Errors, fmt.Errorf("user %s (uid: %s) mailbox init failed: %w", identity.Username, uid, err))
 			continue
 		}
 
@@ -66,7 +69,7 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 			}, state.DryRun)
 
 			if err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("user %s acl sync failed: %w", identity.Username, err))
+				result.Errors = append(result.Errors, fmt.Errorf("user %s (uid: %s) acl sync failed: %w", identity.Username, uid, err))
 				continue
 			}
 		}
@@ -82,16 +85,21 @@ func (o *DovecotOperator) exec(ctx context.Context, apiURL, user, command string
 		return nil
 	}
 
+	var tagBuilder strings.Builder
+	tagBuilder.Grow(len("lexicore-sync-") + len(user))
+	tagBuilder.WriteString("lexicore-sync-")
+	tagBuilder.WriteString(user)
+
 	payload := []DoveadmRequest{
-		{command, params, "lexicore-sync-" + user},
+		{command, params, tagBuilder.String()},
 	}
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
+	buf := bytes.NewBuffer(make([]byte, 0, 256))
+	if err := json.NewEncoder(buf).Encode(payload); err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, buf)
 	if err != nil {
 		return err
 	}
@@ -99,7 +107,11 @@ func (o *DovecotOperator) exec(ctx context.Context, apiURL, user, command string
 	req.Header.Set("Content-Type", "application/json")
 
 	if apiKey, ok := o.GetStringConfig("api_key"); ok == nil && apiKey != "" {
-		req.Header.Set("Authorization", "X-Dovecot-API "+apiKey)
+		var authBuilder strings.Builder
+		authBuilder.Grow(16 + len(apiKey))
+		authBuilder.WriteString("X-Dovecot-API ")
+		authBuilder.WriteString(apiKey)
+		req.Header.Set("Authorization", authBuilder.String())
 	} else if password, ok := o.GetStringConfig("password"); ok == nil && password != "" {
 		req.SetBasicAuth("doveadm", password)
 	}
@@ -112,7 +124,7 @@ func (o *DovecotOperator) exec(ctx context.Context, apiURL, user, command string
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("dovecot api error (%d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("dovecot api error (%d): %s", resp.StatusCode, body)
 	}
 
 	return nil

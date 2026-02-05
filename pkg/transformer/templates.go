@@ -13,23 +13,26 @@ type TemplateTransformer struct {
 }
 
 func NewTemplateTransformer(config map[string]any) (*TemplateTransformer, error) {
-	tt := &TemplateTransformer{
-		templates: make(map[string]*template.Template),
+	templates, ok := config["templates"].(map[string]any)
+	if !ok {
+		return &TemplateTransformer{templates: make(map[string]*template.Template)}, nil
 	}
 
-	if templates, ok := config["templates"].(map[string]any); ok {
-		for key, tmplStr := range templates {
-			str, ok := tmplStr.(string)
-			if !ok {
-				continue
-			}
+	tt := &TemplateTransformer{
+		templates: make(map[string]*template.Template, len(templates)),
+	}
 
-			tmpl, err := template.New(key).Parse(str)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse template %s: %w", key, err)
-			}
-			tt.templates[key] = tmpl
+	for key, tmplStr := range templates {
+		str, ok := tmplStr.(string)
+		if !ok {
+			continue
 		}
+
+		tmpl, err := template.New(key).Parse(str)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse template %s: %w", key, err)
+		}
+		tt.templates[key] = tmpl
 	}
 
 	return tt, nil
@@ -37,31 +40,31 @@ func NewTemplateTransformer(config map[string]any) (*TemplateTransformer, error)
 
 func (t *TemplateTransformer) Transform(
 	ctx *Context,
-	identities []source.Identity,
-	groups []source.Group,
-) ([]source.Identity, []source.Group, error) {
-	transformedIdentities := make([]source.Identity, len(identities))
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
+) (map[string]source.Identity, map[string]source.Group, error) {
+	var buf bytes.Buffer
 
-	for i, identity := range identities {
+	for key, identity := range identities {
 		transformed := identity
 		if transformed.Attributes == nil {
-			transformed.Attributes = make(map[string]any)
+			transformed.Attributes = make(map[string]any, len(t.templates))
 		}
 
-		for key, tmpl := range t.templates {
-			var buf bytes.Buffer
+		for tmplKey, tmpl := range t.templates {
+			buf.Reset()
 			if err := tmpl.Execute(&buf, identity); err != nil {
 				return nil, nil, fmt.Errorf(
 					"failed to execute template %s: %w",
-					key,
+					tmplKey,
 					err,
 				)
 			}
-			transformed.Attributes[key] = buf.String()
+			transformed.Attributes[tmplKey] = buf.String()
 		}
 
-		transformedIdentities[i] = transformed
+		identities[key] = transformed
 	}
 
-	return transformedIdentities, groups, nil
+	return identities, groups, nil
 }

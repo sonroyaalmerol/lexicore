@@ -17,37 +17,41 @@ type Sanitizer interface {
 }
 
 func NewSanitizerTransformer(config map[string]any) (*SanitizerTransformer, error) {
-	rt := &SanitizerTransformer{}
-
-	if sanitizersConfig, ok := config["sanitizers"].([]any); ok {
-		for _, sanitizerConfig := range sanitizersConfig {
-			sanitizerMap, ok := sanitizerConfig.(map[string]any)
-			if !ok {
-				continue
-			}
-
-			sanitizer, err := parseSanitizer(sanitizerMap)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse sanitizer: %w", err)
-			}
-			rt.sanitizers = append(rt.sanitizers, sanitizer)
-		}
+	sanitizersConfig, ok := config["sanitizers"].([]any)
+	if !ok {
+		return &SanitizerTransformer{sanitizers: []Sanitizer{}}, nil
 	}
 
-	return rt, nil
+	sanitizers := make([]Sanitizer, 0, len(sanitizersConfig))
+	for _, sanitizerConfig := range sanitizersConfig {
+		sanitizerMap, ok := sanitizerConfig.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		sanitizer, err := parseSanitizer(sanitizerMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse sanitizer: %w", err)
+		}
+		sanitizers = append(sanitizers, sanitizer)
+	}
+
+	return &SanitizerTransformer{sanitizers: sanitizers}, nil
 }
 
 func (r *SanitizerTransformer) Transform(
 	ctx *Context,
-	identities []source.Identity,
-	groups []source.Group,
-) ([]source.Identity, []source.Group, error) {
-	for i := range identities {
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
+) (map[string]source.Identity, map[string]source.Group, error) {
+	for key := range identities {
+		identity := identities[key]
 		for _, sanitizer := range r.sanitizers {
-			if err := sanitizer.Apply(&identities[i]); err != nil {
+			if err := sanitizer.Apply(&identity); err != nil {
 				return nil, nil, fmt.Errorf("sanitizer application failed: %w", err)
 			}
 		}
+		identities[key] = identity
 	}
 
 	return identities, groups, nil
@@ -113,7 +117,7 @@ func (r *RegexSanitizer) Apply(identity *source.Identity) error {
 		if v, ok := identity.Attributes[r.field].(string); ok {
 			value = v
 		} else {
-			return nil // Field not found or not a string
+			return nil
 		}
 	}
 
@@ -133,7 +137,7 @@ func (r *RegexSanitizer) Apply(identity *source.Identity) error {
 
 type NormalizeSanitizer struct {
 	field     string
-	operation string // lowercase, uppercase, trim
+	operation string
 }
 
 func parseNormalizeSanitizer(config map[string]any) (*NormalizeSanitizer, error) {
@@ -215,21 +219,23 @@ func parseComputeSanitizer(config map[string]any) (*ComputeSanitizer, error) {
 }
 
 func (r *ComputeSanitizer) Apply(identity *source.Identity) error {
-	// TODO: use a proper expression evaluator
 	result := r.evaluateExpression(identity, r.expression)
 	identity.Attributes[r.target] = result
 	return nil
 }
 
 func (r *ComputeSanitizer) evaluateExpression(identity *source.Identity, expr string) string {
-	// TODO: Replace {{field}} with actual values
+	var sb strings.Builder
+	sb.Grow(len(expr) + 32)
+
 	result := expr
 	result = strings.ReplaceAll(result, "{{username}}", identity.Username)
 	result = strings.ReplaceAll(result, "{{email}}", identity.Email)
 
 	for key, value := range identity.Attributes {
 		if str, ok := value.(string); ok {
-			result = strings.ReplaceAll(result, fmt.Sprintf("{{%s}}", key), str)
+			placeholder := "{{" + key + "}}"
+			result = strings.ReplaceAll(result, placeholder, str)
 		}
 	}
 

@@ -5,72 +5,109 @@ import (
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStore_UpdateAndGetIdentities(t *testing.T) {
 	store := NewStore("test")
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"1": {
 			UID:      "1",
 			Username: "user1",
 			Email:    "user1@example.com",
 		},
-		{
+		"2": {
 			UID:      "2",
 			Username: "user2",
 			Email:    "user2@example.com",
 		},
 	}
 
-	store.UpdateIdentities(identities)
+	err := store.UpdateIdentities(identities)
+	require.NoError(t, err)
 
-	retrieved := store.GetIdentities()
-	assert.Len(t, retrieved, 2)
+	keys := store.GetIdentityKeys()
+	assert.Len(t, keys, 2)
+	assert.Contains(t, keys, "1")
+	assert.Contains(t, keys, "2")
 
-	identity, exists := store.GetIdentity("1")
+	hash, exists := store.GetIdentityHash("1")
 	assert.True(t, exists)
-	assert.Equal(t, "user1", identity.Username)
+	assert.NotZero(t, hash)
 }
 
 func TestStore_UpdateAndGetGroups(t *testing.T) {
 	store := NewStore("test")
 
-	groups := []source.Group{
-		{
+	groups := map[string]source.Group{
+		"1": {
 			GID:  "1",
 			Name: "admins",
 		},
-		{
+		"2": {
 			GID:  "2",
 			Name: "users",
 		},
 	}
 
-	store.UpdateGroups(groups)
+	err := store.UpdateGroups(groups)
+	require.NoError(t, err)
 
-	retrieved := store.GetGroups()
-	assert.Len(t, retrieved, 2)
+	keys := store.GetGroupKeys()
+	assert.Len(t, keys, 2)
+	assert.Contains(t, keys, "1")
+	assert.Contains(t, keys, "2")
 
-	group, exists := store.GetGroup("1")
+	hash, exists := store.GetGroupHash("1")
 	assert.True(t, exists)
-	assert.Equal(t, "admins", group.Name)
+	assert.NotZero(t, hash)
 }
 
 func TestStore_Clear(t *testing.T) {
 	store := NewStore("test")
 
-	identities := []source.Identity{{UID: "1", Username: "user1"}}
-	groups := []source.Group{{GID: "1", Name: "admins"}}
+	identities := map[string]source.Identity{
+		"1": {UID: "1", Username: "user1"},
+	}
+	groups := map[string]source.Group{
+		"1": {GID: "1", Name: "admins"},
+	}
 
-	store.UpdateIdentities(identities)
-	store.UpdateGroups(groups)
+	err := store.UpdateIdentities(identities)
+	require.NoError(t, err)
+	err = store.UpdateGroups(groups)
+	require.NoError(t, err)
 
-	assert.Len(t, store.GetIdentities(), 1)
-	assert.Len(t, store.GetGroups(), 1)
+	assert.Len(t, store.GetIdentityKeys(), 1)
+	assert.Len(t, store.GetGroupKeys(), 1)
 
 	store.Clear()
 
-	assert.Len(t, store.GetIdentities(), 0)
-	assert.Len(t, store.GetGroups(), 0)
+	assert.Len(t, store.GetIdentityKeys(), 0)
+	assert.Len(t, store.GetGroupKeys(), 0)
+}
+
+func TestStore_HashConsistency(t *testing.T) {
+	store := NewStore("test")
+
+	identity := source.Identity{
+		UID:      "1",
+		Username: "user1",
+		Email:    "user1@example.com",
+	}
+
+	identities := map[string]source.Identity{"1": identity}
+	err := store.UpdateIdentities(identities)
+	require.NoError(t, err)
+
+	hash1, _ := store.GetIdentityHash("1")
+
+	// Update with same data
+	err = store.UpdateIdentities(identities)
+	require.NoError(t, err)
+
+	hash2, _ := store.GetIdentityHash("1")
+
+	assert.Equal(t, hash1, hash2, "Hash should be consistent for identical data")
 }

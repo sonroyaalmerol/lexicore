@@ -74,7 +74,11 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		zap.Int("groups", len(transformedGroups)),
 	)
 
-	diff := r.calculateDiff(transformedIdentities, transformedGroups)
+	diff, err := r.cache.CalculateDiff(transformedIdentities, transformedGroups)
+	if err != nil {
+		return fmt.Errorf("failed to calculate diff: %w", err)
+	}
+
 	r.logger.Info(
 		"Calculated diff",
 		zap.Int("identities_to_create", len(diff.IdentitiesToCreate)),
@@ -98,8 +102,14 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	}
 
 	if !r.target.Spec.DryRun {
-		r.cache.UpdateIdentities(transformedIdentities)
-		r.cache.UpdateGroups(transformedGroups)
+		if err := r.cache.UpdateIdentities(transformedIdentities); err != nil {
+			r.logger.Error("Failed to update identity cache", zap.Error(err))
+			return fmt.Errorf("failed to update identity cache: %w", err)
+		}
+		if err := r.cache.UpdateGroups(transformedGroups); err != nil {
+			r.logger.Error("Failed to update group cache", zap.Error(err))
+			return fmt.Errorf("failed to update group cache: %w", err)
+		}
 	}
 
 	r.updateStatus(
@@ -130,7 +140,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 
 func (r *Reconciler) fetchFromSource(
 	ctx context.Context,
-) ([]source.Identity, []source.Group, error) {
+) (map[string]source.Identity, map[string]source.Group, error) {
 	identities, err := r.source.GetIdentities(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get identities: %w", err)
@@ -146,30 +156,18 @@ func (r *Reconciler) fetchFromSource(
 
 func (r *Reconciler) applyTransformations(
 	ctx context.Context,
-	identities []source.Identity,
-	groups []source.Group,
-) ([]source.Identity, []source.Group, error) {
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
+) (map[string]source.Identity, map[string]source.Group, error) {
 	tctx := transformer.NewContext(ctx, r.target.Spec.Config)
 
 	return r.transformer.Execute(tctx, identities, groups)
 }
 
-func (r *Reconciler) calculateDiff(
-	identities []source.Identity,
-	groups []source.Group,
-) *cache.Diff {
-	return cache.CalculateDiff(
-		r.cache.GetIdentities(),
-		identities,
-		r.cache.GetGroups(),
-		groups,
-	)
-}
-
 func (r *Reconciler) syncToTarget(
 	ctx context.Context,
-	identities []source.Identity,
-	groups []source.Group,
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
 ) (*operator.SyncResult, error) {
 	state := &operator.SyncState{
 		Identities: identities,

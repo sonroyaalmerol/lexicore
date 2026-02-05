@@ -15,8 +15,8 @@ type Operator interface {
 }
 
 type SyncState struct {
-	Identities []source.Identity
-	Groups     []source.Group
+	Identities map[string]source.Identity
+	Groups     map[string]source.Group
 	DryRun     bool
 }
 

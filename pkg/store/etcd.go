@@ -64,3 +64,7 @@ func (s *EtcdStore) Delete(ctx context.Context, kind, name string) error {
 	_, err := s.client.Delete(ctx, key)
 	return err
 }
+
+func (s *EtcdStore) Close() error {
+	return s.Client().Close()
+}

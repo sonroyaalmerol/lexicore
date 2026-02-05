@@ -64,14 +64,14 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*oper
 	}
 	defer o.Close()
 
-	res := &operator.SyncResult{}
+	res := &operator.SyncResult{
+		Errors: make([]error, 0, len(state.Identities)/10), // Pre-allocate for ~10% error rate
+	}
 	userBaseDN, _ := o.GetStringConfig("userBaseDN")
 
-	for _, id := range state.Identities {
-		dn := fmt.Sprintf("CN=%s,%s", id.DisplayName, userBaseDN)
-		if id.DisplayName == "" {
-			dn = fmt.Sprintf("CN=%s,%s", id.Username, userBaseDN)
-		}
+	// Iterate over map directly
+	for uid, id := range state.Identities {
+		dn := o.buildDN(id, userBaseDN)
 
 		if state.DryRun {
 			res.IdentitiesUpdated++
@@ -89,20 +89,20 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*oper
 
 		sr, err := o.conn.Search(search)
 		if err != nil {
-			res.Errors = append(res.Errors, fmt.Errorf("search failed for %s: %w", id.Username, err))
+			res.Errors = append(res.Errors, fmt.Errorf("search failed for %s (uid: %s): %w", id.Username, uid, err))
 			continue
 		}
 
 		if len(sr.Entries) == 0 {
-			if err := o.createUser(dn, id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("create %s failed: %w", id.Username, err))
+			if err := o.createUser(dn, &id); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("create %s (uid: %s) failed: %w", id.Username, uid, err))
 			} else {
 				res.IdentitiesCreated++
 			}
 		} else {
 			existingDN := sr.Entries[0].DN
-			if err := o.updateUser(existingDN, id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("update %s failed: %w", id.Username, err))
+			if err := o.updateUser(existingDN, &id); err != nil {
+				res.Errors = append(res.Errors, fmt.Errorf("update %s (uid: %s) failed: %w", id.Username, uid, err))
 			} else {
 				res.IdentitiesUpdated++
 			}
@@ -112,13 +112,27 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*oper
 	return res, nil
 }
 
-func (o *ADOperator) createUser(dn string, id source.Identity) error {
+func (o *ADOperator) buildDN(id source.Identity, userBaseDN string) string {
+	cn := id.DisplayName
+	if cn == "" {
+		cn = id.Username
+	}
+	return fmt.Sprintf("CN=%s,%s", cn, userBaseDN)
+}
+
+func (o *ADOperator) createUser(dn string, id *source.Identity) error {
 	domain, _ := o.GetStringConfig("domain")
 
 	addReq := ldap.NewAddRequest(dn, nil)
 	addReq.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user"})
 	addReq.Attribute("sAMAccountName", []string{id.Username})
-	addReq.Attribute("userPrincipalName", []string{id.Username + "@" + domain})
+
+	var upnBuilder strings.Builder
+	upnBuilder.Grow(len(id.Username) + len(domain) + 1)
+	upnBuilder.WriteString(id.Username)
+	upnBuilder.WriteByte('@')
+	upnBuilder.WriteString(domain)
+	addReq.Attribute("userPrincipalName", []string{upnBuilder.String()})
 
 	if id.Email != "" {
 		addReq.Attribute("mail", []string{id.Email})
@@ -132,17 +146,8 @@ func (o *ADOperator) createUser(dn string, id source.Identity) error {
 	}
 
 	if initPass, ok := o.GetStringConfig("defaultPassword"); ok == nil {
-		utf16Pass := utf16.Encode([]rune(fmt.Sprintf("\"%s\"", initPass)))
-		b := make([]byte, len(utf16Pass)*2)
-		for i, v := range utf16Pass {
-			b[i*2] = byte(v)
-			b[i*2+1] = byte(v >> 8)
-		}
-
-		passMod := ldap.NewModifyRequest(dn, nil)
-		passMod.Replace("unicodePwd", []string{string(b)})
-		if err := o.conn.Modify(passMod); err != nil {
-			return fmt.Errorf("failed to set initial password: %w", err)
+		if err := o.setPassword(dn, initPass); err != nil {
+			return err
 		}
 	}
 
@@ -151,18 +156,41 @@ func (o *ADOperator) createUser(dn string, id source.Identity) error {
 	return o.conn.Modify(uacMod)
 }
 
-func (o *ADOperator) updateUser(dn string, id source.Identity) error {
-	modReq := ldap.NewModifyRequest(dn, nil)
+func (o *ADOperator) setPassword(dn, password string) error {
+	quoted := make([]rune, 0, len(password)+2)
+	quoted = append(quoted, '"')
+	quoted = append(quoted, []rune(password)...)
+	quoted = append(quoted, '"')
 
+	utf16Pass := utf16.Encode(quoted)
+	b := make([]byte, len(utf16Pass)*2)
+	for i, v := range utf16Pass {
+		b[i*2] = byte(v)
+		b[i*2+1] = byte(v >> 8)
+	}
+
+	passMod := ldap.NewModifyRequest(dn, nil)
+	passMod.Replace("unicodePwd", []string{string(b)})
+	if err := o.conn.Modify(passMod); err != nil {
+		return fmt.Errorf("failed to set initial password: %w", err)
+	}
+	return nil
+}
+
+func (o *ADOperator) updateUser(dn string, id *source.Identity) error {
+	modReq := ldap.NewModifyRequest(dn, nil)
 	hasChanges := false
+
 	for k, v := range id.Attributes {
-		if strings.HasPrefix(k, "ad:") {
-			adKey := strings.TrimPrefix(k, "ad:")
-			val := fmt.Sprintf("%v", v)
-			if val != "" {
-				modReq.Replace(adKey, []string{val})
-				hasChanges = true
-			}
+		if !strings.HasPrefix(k, "ad:") {
+			continue
+		}
+
+		adKey := k[3:] // "ad:" is 3 bytes
+		val := fmt.Sprintf("%v", v)
+		if val != "" {
+			modReq.Replace(adKey, []string{val})
+			hasChanges = true
 		}
 	}
 

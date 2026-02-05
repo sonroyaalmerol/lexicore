@@ -18,6 +18,7 @@ type Config struct {
 
 type ServerConfig struct {
 	Address     string `yaml:"address" json:"address"`
+	Name        string `yaml:"name" json:"name"`
 	HealthCheck bool   `yaml:"healthCheck" json:"healthCheck"`
 	Metrics     bool   `yaml:"metrics" json:"metrics"`
 }
@@ -35,12 +36,20 @@ type MetricsConfig struct {
 }
 
 type EtcdConfig struct {
-	Endpoints      []string `yaml:"endpoints" json:"endpoints"` // Empty triggers embedded
-	DataDir        string   `yaml:"dataDir" json:"dataDir"`
-	Name           string   `yaml:"name" json:"name"`
-	PeerAddr       string   `yaml:"peerAddr" json:"peerAddr"`
-	ClientAddr     string   `yaml:"clientAddr" json:"clientAddr"`
-	InitialCluster string   `yaml:"initialCluster" json:"initialCluster"`
+	// External etcd endpoints
+	Endpoints []string `yaml:"endpoints" json:"endpoints"`
+
+	// Kubernetes service discovery
+	UseKubernetesDiscovery bool   `yaml:"useKubernetesDiscovery" json:"useKubernetesDiscovery"`
+	KubernetesServiceName  string `yaml:"kubernetesServiceName" json:"kubernetesServiceName"`
+	KubernetesNamespace    string `yaml:"kubernetesNamespace" json:"kubernetesNamespace"`
+
+	// Embedded etcd (for manual deployment)
+	DataDir        string `yaml:"dataDir" json:"dataDir"`
+	Name           string `yaml:"name" json:"name"`
+	PeerAddr       string `yaml:"peerAddr" json:"peerAddr"`
+	ClientAddr     string `yaml:"clientAddr" json:"clientAddr"`
+	InitialCluster string `yaml:"initialCluster" json:"initialCluster"`
 }
 
 type WorkersConfig struct {
@@ -52,6 +61,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Address:     ":8080",
+			Name:        "lexicore",
 			HealthCheck: true,
 			Metrics:     true,
 		},
@@ -66,6 +76,11 @@ func DefaultConfig() *Config {
 			Path:    "/metrics",
 		},
 		Etcd: EtcdConfig{
+			// Auto-detect Kubernetes
+			UseKubernetesDiscovery: true,
+			KubernetesServiceName:  "lexicore-etcd",
+			KubernetesNamespace:    "default",
+			// Fallback to embedded
 			DataDir:        "lexicore.etcd",
 			Name:           "node-1",
 			PeerAddr:       "http://localhost:2380",

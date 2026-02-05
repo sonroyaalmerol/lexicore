@@ -17,20 +17,20 @@ func TestSelectorTransformer_GroupSelector(t *testing.T) {
 	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{Username: "user1", Groups: []string{"admins", "users"}},
-		{Username: "user2", Groups: []string{"users"}},
-		{Username: "user3", Groups: []string{"admins"}},
-		{Username: "user4", Groups: []string{"guests"}},
+	identities := map[string]source.Identity{
+		"user1": {Username: "user1", Groups: []string{"admins", "users"}},
+		"user2": {Username: "user2", Groups: []string{"users"}},
+		"user3": {Username: "user3", Groups: []string{"admins"}},
+		"user4": {Username: "user4", Groups: []string{"guests"}},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	filtered, _, err := ft.Transform(ctx, identities, []source.Group{})
+	filtered, _, err := ft.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Len(t, filtered, 2)
-	assert.Equal(t, "user1", filtered[0].Username)
-	assert.Equal(t, "user3", filtered[1].Username)
+	assert.Contains(t, filtered, "user1")
+	assert.Contains(t, filtered, "user3")
 }
 
 func TestSelectorTransformer_NoGroupSelector(t *testing.T) {
@@ -39,13 +39,13 @@ func TestSelectorTransformer_NoGroupSelector(t *testing.T) {
 	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{Username: "user1", Groups: []string{"admins"}},
-		{Username: "user2", Groups: []string{"users"}},
+	identities := map[string]source.Identity{
+		"user1": {Username: "user1", Groups: []string{"admins"}},
+		"user2": {Username: "user2", Groups: []string{"users"}},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	filtered, _, err := ft.Transform(ctx, identities, []source.Group{})
+	filtered, _, err := ft.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Len(t, filtered, 2)
@@ -59,13 +59,13 @@ func TestSelectorTransformer_EmptyGroups(t *testing.T) {
 	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{Username: "user1", Groups: []string{}},
-		{Username: "user2", Groups: nil},
+	identities := map[string]source.Identity{
+		"user1": {Username: "user1", Groups: []string{}},
+		"user2": {Username: "user2", Groups: nil},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	filtered, _, err := ft.Transform(ctx, identities, []source.Group{})
+	filtered, _, err := ft.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Len(t, filtered, 0)
@@ -79,20 +79,20 @@ func TestSelectorTransformer_MultipleGroupsPerUser(t *testing.T) {
 	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
-	identities := []source.Identity{
-		{
+	identities := map[string]source.Identity{
+		"user1": {
 			Username: "user1",
 			Groups:   []string{"admins", "developers", "users"},
 		},
-		{Username: "user2", Groups: []string{"admins", "users"}},
+		"user2": {Username: "user2", Groups: []string{"admins", "users"}},
 	}
 
 	ctx := NewContext(context.Background(), nil)
-	filtered, _, err := ft.Transform(ctx, identities, []source.Group{})
+	filtered, _, err := ft.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
 	assert.Len(t, filtered, 1)
-	assert.Equal(t, "user1", filtered[0].Username)
+	assert.Contains(t, filtered, "user1")
 }
 
 func TestSelectorTransformer_EmailDomain(t *testing.T) {

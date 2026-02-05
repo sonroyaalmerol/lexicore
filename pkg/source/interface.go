@@ -26,10 +26,10 @@ type Source interface {
 	Connect(ctx context.Context) error
 
 	// GetIdentities fetches all identities
-	GetIdentities(ctx context.Context) ([]Identity, error)
+	GetIdentities(ctx context.Context) (map[string]Identity, error)
 
 	// GetGroups fetches all groups
-	GetGroups(ctx context.Context) ([]Group, error)
+	GetGroups(ctx context.Context) (map[string]Group, error)
 
 	// Watch returns a channel for change notifications (optional)
 	Watch(ctx context.Context) (<-chan Event, error)

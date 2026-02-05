@@ -62,7 +62,7 @@ func (l *LDAPSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (l *LDAPSource) GetIdentities(ctx context.Context) ([]source.Identity, error) {
+func (l *LDAPSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
 	searchRequest := ldap.NewSearchRequest(
 		l.config.BaseDN,
 		ldap.ScopeWholeSubtree,
@@ -78,14 +78,14 @@ func (l *LDAPSource) GetIdentities(ctx context.Context) ([]source.Identity, erro
 		return nil, fmt.Errorf("LDAP search failed: %w", err)
 	}
 
-	identities := make([]source.Identity, 0, len(sr.Entries))
+	identities := make(map[string]source.Identity)
 	for _, entry := range sr.Entries {
-		identities = append(identities, l.mapper.MapIdentity(entry))
+		identities[entry.DN] = l.mapper.MapIdentity(entry)
 	}
 	return identities, nil
 }
 
-func (l *LDAPSource) GetGroups(ctx context.Context) ([]source.Group, error) {
+func (l *LDAPSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
 	searchRequest := ldap.NewSearchRequest(
 		l.config.BaseDN,
 		ldap.ScopeWholeSubtree,
@@ -101,9 +101,9 @@ func (l *LDAPSource) GetGroups(ctx context.Context) ([]source.Group, error) {
 		return nil, fmt.Errorf("LDAP group search failed: %w", err)
 	}
 
-	groups := make([]source.Group, 0, len(sr.Entries))
+	groups := make(map[string]source.Group)
 	for _, entry := range sr.Entries {
-		groups = append(groups, l.mapper.MapGroup(entry))
+		groups[entry.DN] = l.mapper.MapGroup(entry)
 	}
 	return groups, nil
 }

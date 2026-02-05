@@ -24,14 +24,14 @@ func TestEndToEndFlow(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1": {
 				UID:      "1",
 				Username: "alice",
 				Email:    "alice@example.com",
 				Groups:   []string{"admins"},
 			},
-			{
+			"2": {
 				UID:      "2",
 				Username: "bob",
 				Email:    "bob@example.com",
@@ -78,7 +78,7 @@ spec:
 
 	assert.True(t, op.syncCalled)
 	assert.Equal(t, "Success", target.Status.Status)
-	assert.Equal(t, 1, target.Status.IdentityCount) // Only alice (selectored by group)
+	assert.Equal(t, 1, target.Status.IdentityCount) // Only alice (filtered by group)
 }
 
 func TestTemplateTransformer_Integration(t *testing.T) {
@@ -89,8 +89,8 @@ func TestTemplateTransformer_Integration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1": {
 				UID:      "1",
 				Username: "alice",
 				Email:    "alice@example.com",
@@ -99,7 +99,7 @@ func TestTemplateTransformer_Integration(t *testing.T) {
 					"lastName":  "Smith",
 				},
 			},
-			{
+			"2": {
 				UID:      "2",
 				Username: "bob",
 				Email:    "bob@example.com",
@@ -161,26 +161,26 @@ func TestSelectorTransformer_Integration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1": {
 				UID:      "1",
 				Username: "alice",
 				Email:    "alice@example.com",
 				Groups:   []string{"admins", "developers"},
 			},
-			{
+			"2": {
 				UID:      "2",
 				Username: "bob",
 				Email:    "bob@example.com",
 				Groups:   []string{"users"},
 			},
-			{
+			"3": {
 				UID:      "3",
 				Username: "charlie",
 				Email:    "charlie@example.com",
 				Groups:   []string{"developers", "users"},
 			},
-			{
+			"4": {
 				UID:      "4",
 				Username: "diana",
 				Email:    "diana@example.com",
@@ -235,8 +235,8 @@ func TestCombinedTransformers_Integration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1": {
 				UID:      "1",
 				Username: "alice",
 				Email:    "alice@company.com",
@@ -245,7 +245,7 @@ func TestCombinedTransformers_Integration(t *testing.T) {
 					"department": "Engineering",
 				},
 			},
-			{
+			"2": {
 				UID:      "2",
 				Username: "bob",
 				Email:    "bob@company.com",
@@ -254,7 +254,7 @@ func TestCombinedTransformers_Integration(t *testing.T) {
 					"department": "Sales",
 				},
 			},
-			{
+			"3": {
 				UID:      "3",
 				Username: "charlie",
 				Email:    "charlie@company.com",
@@ -328,8 +328,8 @@ func TestEmailProvisioningWorkflow_Integration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1001": {
 				UID:      "1001",
 				Username: "jsmith",
 				Email:    "john.smith@oldcompany.com",
@@ -340,7 +340,7 @@ func TestEmailProvisioningWorkflow_Integration(t *testing.T) {
 					"title":     "Senior Engineer",
 				},
 			},
-			{
+			"1002": {
 				UID:      "1002",
 				Username: "mjones",
 				Email:    "mary.jones@oldcompany.com",
@@ -351,7 +351,7 @@ func TestEmailProvisioningWorkflow_Integration(t *testing.T) {
 					"title":     "Sales Manager",
 				},
 			},
-			{
+			"1003": {
 				UID:      "1003",
 				Username: "bwilson",
 				Email:    "bob.wilson@oldcompany.com",
@@ -434,8 +434,8 @@ func TestUnixAccountProvisioning_Integration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"2001": {
 				UID:      "2001",
 				Username: "admin1",
 				Email:    "admin1@example.com",
@@ -444,7 +444,7 @@ func TestUnixAccountProvisioning_Integration(t *testing.T) {
 					"employeeId": "E001",
 				},
 			},
-			{
+			"2002": {
 				UID:      "2002",
 				Username: "dev1",
 				Email:    "dev1@example.com",
@@ -515,8 +515,8 @@ func TestMultiStageDataEnrichment_Integration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"3001": {
 				UID:      "3001",
 				Username: "alice",
 				Email:    "alice@example.com",
@@ -527,7 +527,7 @@ func TestMultiStageDataEnrichment_Integration(t *testing.T) {
 					"department": "Engineering",
 				},
 			},
-			{
+			"3002": {
 				UID:      "3002",
 				Username: "bob",
 				Email:    "bob@example.com",
@@ -647,8 +647,8 @@ spec:
 	require.Len(t, target.Spec.Transformers, 2)
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1": {
 				UID:        "1",
 				Username:   "alice",
 				Email:      "alice@example.com",
@@ -800,15 +800,15 @@ spec:
 
 // Mock implementations
 type mockSource struct {
-	identities []source.Identity
-	groups     []source.Group
+	identities map[string]source.Identity
+	groups     map[string]source.Group
 }
 
 func (m *mockSource) Connect(ctx context.Context) error { return nil }
-func (m *mockSource) GetIdentities(ctx context.Context) ([]source.Identity, error) {
+func (m *mockSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
 	return m.identities, nil
 }
-func (m *mockSource) GetGroups(ctx context.Context) ([]source.Group, error) {
+func (m *mockSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
 	return m.groups, nil
 }
 func (m *mockSource) Watch(ctx context.Context) (<-chan source.Event, error) {

@@ -3,6 +3,7 @@ package authentik
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -43,8 +44,8 @@ func (s *AuthentikSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (s *AuthentikSource) GetIdentities(ctx context.Context) ([]source.Identity, error) {
-	var identities []source.Identity
+func (s *AuthentikSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
+	identities := make(map[string]source.Identity)
 	page := int32(1)
 
 	for {
@@ -59,7 +60,7 @@ func (s *AuthentikSource) GetIdentities(ctx context.Context) ([]source.Identity,
 		}
 
 		for _, user := range resp.Results {
-			identities = append(identities, s.mapUser(user))
+			identities[strconv.Itoa(int(user.Pk))] = s.mapUser(user)
 		}
 
 		if resp.Pagination.Next <= 0 {
@@ -71,8 +72,8 @@ func (s *AuthentikSource) GetIdentities(ctx context.Context) ([]source.Identity,
 	return identities, nil
 }
 
-func (s *AuthentikSource) GetGroups(ctx context.Context) ([]source.Group, error) {
-	var groups []source.Group
+func (s *AuthentikSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
+	groups := make(map[string]source.Group)
 	page := int32(1)
 
 	for {
@@ -87,7 +88,7 @@ func (s *AuthentikSource) GetGroups(ctx context.Context) ([]source.Group, error)
 		}
 
 		for _, grp := range resp.Results {
-			groups = append(groups, s.mapGroup(grp))
+			groups[grp.Pk] = s.mapGroup(grp)
 		}
 
 		if resp.Pagination.Next <= 0 {
@@ -134,7 +135,7 @@ func (s *AuthentikSource) mapUser(u authentik.User) source.Identity {
 	}
 
 	return source.Identity{
-		UID:         fmt.Sprintf("%d", u.Pk),
+		UID:         strconv.Itoa(int(u.Pk)),
 		Username:    u.Username,
 		Email:       email,
 		DisplayName: u.Name,

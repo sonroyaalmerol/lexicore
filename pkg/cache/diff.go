@@ -1,6 +1,9 @@
 package cache
 
-import "codeberg.org/lexicore/lexicore/pkg/source"
+import (
+	"codeberg.org/lexicore/lexicore/pkg/source"
+	"github.com/gohugoio/hashstructure"
+)
 
 type Diff struct {
 	IdentitiesToCreate []source.Identity
@@ -20,71 +23,69 @@ func (d *Diff) HasChanges() bool {
 		len(d.GroupsToDelete) > 0
 }
 
-func CalculateDiff(
-	oldIdentities []source.Identity,
-	newIdentities []source.Identity,
-	oldGroups []source.Group,
-	newGroups []source.Group,
-) *Diff {
-	diff := &Diff{}
-
-	oldIdentityConstant := make(map[string]source.Identity)
-	for _, identity := range oldIdentities {
-		oldIdentityConstant[identityKey(identity)] = identity
+func (store *Store) CalculateDiff(
+	newIdentities map[string]source.Identity,
+	newGroups map[string]source.Group,
+) (*Diff, error) {
+	diff := &Diff{
+		IdentitiesToCreate: make([]source.Identity, 0),
+		IdentitiesToUpdate: make([]source.Identity, 0),
+		IdentitiesToDelete: make([]source.Identity, 0),
+		GroupsToCreate:     make([]source.Group, 0),
+		GroupsToUpdate:     make([]source.Group, 0),
+		GroupsToDelete:     make([]source.Group, 0),
 	}
 
-	newIdentityConstant := make(map[string]source.Identity)
-	for _, identity := range newIdentities {
-		key := identityKey(identity)
-		newIdentityConstant[key] = identity
+	seenIdentityKeys := make(map[string]bool, len(newIdentities))
+	seenGroupKeys := make(map[string]bool, len(newGroups))
 
-		if oldIdentity, exists := oldIdentityConstant[key]; exists {
-			if needsIdentityUpdate(oldIdentity, identity) {
-				diff.IdentitiesToUpdate = append(diff.IdentitiesToUpdate, identity)
+	for key, newIdentity := range newIdentities {
+		seenIdentityKeys[key] = true
+		newHash, err := hashstructure.Hash(newIdentity, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if oldHash, exists := store.GetIdentityHash(key); exists {
+			if oldHash != newHash {
+				diff.IdentitiesToUpdate = append(diff.IdentitiesToUpdate, newIdentity)
 			}
 		} else {
-			diff.IdentitiesToCreate = append(diff.IdentitiesToCreate, identity)
+			diff.IdentitiesToCreate = append(diff.IdentitiesToCreate, newIdentity)
 		}
 	}
 
-	for _, oldIdentity := range oldIdentities {
-		if _, exists := newIdentityConstant[identityKey(oldIdentity)]; !exists {
-			diff.IdentitiesToDelete = append(diff.IdentitiesToDelete, oldIdentity)
+	for _, oldKey := range store.GetIdentityKeys() {
+		if !seenIdentityKeys[oldKey] {
+			diff.IdentitiesToDelete = append(diff.IdentitiesToDelete, source.Identity{
+				UID: oldKey,
+			})
 		}
 	}
 
-	oldGroupConstant := make(map[string]source.Group)
-	for _, group := range oldGroups {
-		oldGroupConstant[groupKey(group)] = group
-	}
+	for key, newGroup := range newGroups {
+		seenGroupKeys[key] = true
+		newHash, err := hashstructure.Hash(newGroup, nil)
+		if err != nil {
+			return nil, err
+		}
 
-	newGroupConstant := make(map[string]source.Group)
-	for _, group := range newGroups {
-		key := groupKey(group)
-		newGroupConstant[key] = group
-
-		if oldGroup, exists := oldGroupConstant[key]; exists {
-			if needsGroupUpdate(oldGroup, group) {
-				diff.GroupsToUpdate = append(diff.GroupsToUpdate, group)
+		if oldHash, exists := store.GetGroupHash(key); exists {
+			if oldHash != newHash {
+				diff.GroupsToUpdate = append(diff.GroupsToUpdate, newGroup)
 			}
 		} else {
-			diff.GroupsToCreate = append(diff.GroupsToCreate, group)
+			diff.GroupsToCreate = append(diff.GroupsToCreate, newGroup)
 		}
 	}
 
-	for _, oldGroup := range oldGroups {
-		if _, exists := newGroupConstant[groupKey(oldGroup)]; !exists {
-			diff.GroupsToDelete = append(diff.GroupsToDelete, oldGroup)
+	for _, oldKey := range store.GetGroupKeys() {
+		if !seenGroupKeys[oldKey] {
+			diff.GroupsToDelete = append(diff.GroupsToDelete, source.Group{
+				GID: oldKey,
+			})
 		}
 	}
 
-	return diff
-}
-
-func needsIdentityUpdate(old, new source.Identity) bool {
-	return HashIdentity(old) != HashIdentity(new)
-}
-
-func needsGroupUpdate(old, new source.Group) bool {
-	return HashGroup(old) != HashGroup(new)
+	return diff, nil
 }

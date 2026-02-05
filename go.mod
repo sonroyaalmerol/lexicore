@@ -5,9 +5,11 @@ go 1.25.5
 require (
 	github.com/go-ldap/ldap/v3 v3.4.12
 	github.com/goccy/go-yaml v1.19.2
+	github.com/gohugoio/hashstructure v0.6.0
 	github.com/puzpuzpuz/xsync/v4 v4.3.0
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.11.1
+	go.etcd.io/etcd/api/v3 v3.6.7
 	go.etcd.io/etcd/client/v3 v3.6.7
 	go.etcd.io/etcd/server/v3 v3.6.7
 	go.uber.org/zap v1.27.1
@@ -58,7 +60,6 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
-	go.etcd.io/etcd/api/v3 v3.6.7 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.7 // indirect
 	go.etcd.io/etcd/pkg/v3 v3.6.7 // indirect
 	go.etcd.io/raft/v3 v3.6.0 // indirect

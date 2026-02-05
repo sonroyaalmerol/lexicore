@@ -8,7 +8,7 @@ import (
 )
 
 type Transformer interface {
-	Transform(ctx *Context, identities []source.Identity, groups []source.Group) ([]source.Identity, []source.Group, error)
+	Transform(ctx *Context, identities map[string]source.Identity, groups map[string]source.Group) (map[string]source.Identity, map[string]source.Group, error)
 }
 
 type Pipeline struct {
@@ -16,7 +16,7 @@ type Pipeline struct {
 }
 
 func NewPipeline(configs []manifest.TransformerConfig) (*Pipeline, error) {
-	pipeline := &Pipeline{}
+	transformers := make([]Transformer, 0, len(configs))
 
 	for _, config := range configs {
 		transformer, err := createTransformer(config)
@@ -27,17 +27,17 @@ func NewPipeline(configs []manifest.TransformerConfig) (*Pipeline, error) {
 				err,
 			)
 		}
-		pipeline.transformers = append(pipeline.transformers, transformer)
+		transformers = append(transformers, transformer)
 	}
 
-	return pipeline, nil
+	return &Pipeline{transformers: transformers}, nil
 }
 
 func (p *Pipeline) Execute(
 	ctx *Context,
-	identities []source.Identity,
-	groups []source.Group,
-) ([]source.Identity, []source.Group, error) {
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
+) (map[string]source.Identity, map[string]source.Group, error) {
 	var err error
 
 	for _, transformer := range p.transformers {

@@ -115,23 +115,23 @@ func TestManager_Reconcile(t *testing.T) {
 	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1": {
 				UID:      "1",
 				Username: "alice",
 				Email:    "alice@example.com",
 				Groups:   []string{"admins"},
 			},
-			{
+			"2": {
 				UID:      "2",
 				Username: "bob",
 				Email:    "bob@example.com",
 				Groups:   []string{"users"},
 			},
 		},
-		groups: []source.Group{
-			{GID: "100", Name: "admins"},
-			{GID: "101", Name: "users"},
+		groups: map[string]source.Group{
+			"100": {GID: "100", Name: "admins"},
+			"101": {GID: "101", Name: "users"},
 		},
 	}
 
@@ -167,8 +167,8 @@ func TestManager_ReconcileWithTransformers(t *testing.T) {
 	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{
+		identities: map[string]source.Identity{
+			"1": {
 				UID:      "1",
 				Username: "alice",
 				Email:    "alice@example.com",
@@ -178,7 +178,7 @@ func TestManager_ReconcileWithTransformers(t *testing.T) {
 					"lastName":  "Smith",
 				},
 			},
-			{
+			"2": {
 				UID:      "2",
 				Username: "bob",
 				Email:    "bob@example.com",
@@ -188,7 +188,7 @@ func TestManager_ReconcileWithTransformers(t *testing.T) {
 					"lastName":  "Jones",
 				},
 			},
-			{
+			"3": {
 				UID:      "3",
 				Username: "charlie",
 				Email:    "charlie@example.com",
@@ -199,10 +199,10 @@ func TestManager_ReconcileWithTransformers(t *testing.T) {
 				},
 			},
 		},
-		groups: []source.Group{
-			{GID: "100", Name: "admins"},
-			{GID: "101", Name: "users"},
-			{GID: "102", Name: "developers"},
+		groups: map[string]source.Group{
+			"100": {GID: "100", Name: "admins"},
+			"101": {GID: "101", Name: "users"},
+			"102": {GID: "102", Name: "developers"},
 		},
 	}
 
@@ -270,8 +270,8 @@ func TestManager_ReconcileWithDryRun(t *testing.T) {
 	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{UID: "1", Username: "alice", Email: "alice@example.com"},
+		identities: map[string]source.Identity{
+			"1": {UID: "1", Username: "alice", Email: "alice@example.com"},
 		},
 	}
 
@@ -305,8 +305,8 @@ func TestManager_ReconcileWithInvalidTransformer(t *testing.T) {
 	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{UID: "1", Username: "alice", Email: "alice@example.com"},
+		identities: map[string]source.Identity{
+			"1": {UID: "1", Username: "alice", Email: "alice@example.com"},
 		},
 	}
 
@@ -374,8 +374,8 @@ func TestManager_ReconcileWithOperatorError(t *testing.T) {
 	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{UID: "1", Username: "alice", Email: "alice@example.com"},
+		identities: map[string]source.Identity{
+			"1": {UID: "1", Username: "alice", Email: "alice@example.com"},
 		},
 	}
 
@@ -411,8 +411,8 @@ func TestManager_Start(t *testing.T) {
 	manager := NewManager(config.DefaultConfig(), logger)
 
 	src := &mockSource{
-		identities: []source.Identity{
-			{UID: "1", Username: "alice", Email: "alice@example.com"},
+		identities: map[string]source.Identity{
+			"1": {UID: "1", Username: "alice", Email: "alice@example.com"},
 		},
 	}
 
@@ -448,8 +448,8 @@ func TestManager_Start(t *testing.T) {
 // Mock implementations
 
 type mockSource struct {
-	identities         []source.Identity
-	groups             []source.Group
+	identities         map[string]source.Identity
+	groups             map[string]source.Group
 	getIdentitiesError error
 	getGroupsError     error
 }
@@ -458,14 +458,14 @@ func (m *mockSource) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockSource) GetIdentities(ctx context.Context) ([]source.Identity, error) {
+func (m *mockSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
 	if m.getIdentitiesError != nil {
 		return nil, m.getIdentitiesError
 	}
 	return m.identities, nil
 }
 
-func (m *mockSource) GetGroups(ctx context.Context) ([]source.Group, error) {
+func (m *mockSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
 	if m.getGroupsError != nil {
 		return nil, m.getGroupsError
 	}

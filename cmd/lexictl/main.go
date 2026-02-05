@@ -30,6 +30,7 @@ func main() {
 	rootCmd.AddCommand(newApplyCommand())
 	rootCmd.AddCommand(newGetCommand())
 	rootCmd.AddCommand(newDeleteCommand())
+	rootCmd.AddCommand(newReconcileCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -154,6 +155,10 @@ func newDeleteCommand() *cobra.Command {
 			kind := args[0]
 			name := args[1]
 			endpoint := getEndpoint(kind)
+			if endpoint == "" {
+				fmt.Printf("Error: Unknown kind %q\n", kind)
+				return
+			}
 
 			req, _ := http.NewRequest(http.MethodDelete, serverAddr+apiPrefix+endpoint+"/"+name, nil)
 			resp, err := http.DefaultClient.Do(req)
@@ -166,10 +171,94 @@ func newDeleteCommand() *cobra.Command {
 			if resp.StatusCode == http.StatusOK {
 				fmt.Printf("%s %q deleted\n", kind, name)
 			} else {
-				fmt.Printf("Failed to delete (Status: %d)\n", resp.StatusCode)
+				body, _ := io.ReadAll(resp.Body)
+				fmt.Printf("Failed to delete (Status: %d): %s\n", resp.StatusCode, string(body))
 			}
 		},
 	}
+}
+
+func newReconcileCommand() *cobra.Command {
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:   "reconcile [synctarget-name]",
+		Short: "Manually trigger reconciliation for a SyncTarget or all SyncTargets",
+		Long: `Trigger immediate reconciliation for a specific SyncTarget by name, 
+or use --all to reconcile all SyncTargets at once.`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			if all {
+				resp, err := http.Post(serverAddr+apiPrefix+"/reconcile", "application/json", nil)
+				if err != nil {
+					fmt.Printf("Error connecting to server: %v\n", err)
+					return
+				}
+				defer resp.Body.Close()
+
+				var result map[string]any
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					fmt.Printf("Error decoding response: %v\n", err)
+					return
+				}
+
+				switch resp.StatusCode {
+				case http.StatusAccepted:
+					fmt.Printf("✓ Reconciliation queued for %v targets\n", result["count"])
+				case http.StatusPartialContent:
+					fmt.Printf("⚠ Partial success: %v targets queued, %v failed\n",
+						result["queued"], len(result["failed"].([]any)))
+					if failed, ok := result["failed"].([]any); ok && len(failed) > 0 {
+						fmt.Println("Failed targets:")
+						for _, f := range failed {
+							fmt.Printf("  - %v\n", f)
+						}
+					}
+				default:
+					body, _ := io.ReadAll(resp.Body)
+					fmt.Printf("Error from server (%d): %s\n", resp.StatusCode, string(body))
+				}
+				return
+			}
+
+			if len(args) == 0 {
+				fmt.Println("Error: must specify a SyncTarget name or use --all flag")
+				cmd.Usage()
+				return
+			}
+
+			targetName := args[0]
+			url := fmt.Sprintf("%s%s/synctargets/%s/reconcile", serverAddr, apiPrefix, targetName)
+
+			resp, err := http.Post(url, "application/json", nil)
+			if err != nil {
+				fmt.Printf("Error connecting to server: %v\n", err)
+				return
+			}
+			defer resp.Body.Close()
+
+			var result map[string]any
+			body, _ := io.ReadAll(resp.Body)
+			json.Unmarshal(body, &result)
+
+			switch resp.StatusCode {
+			case http.StatusAccepted:
+				fmt.Printf("✓ Reconciliation queued for SyncTarget %q\n", targetName)
+			case http.StatusInternalServerError:
+				if errMsg, ok := result["error"].(string); ok {
+					fmt.Printf("Error: %s\n", errMsg)
+				} else {
+					fmt.Printf("Error from server (%d): %s\n", resp.StatusCode, string(body))
+				}
+			default:
+				fmt.Printf("Unexpected response (%d): %s\n", resp.StatusCode, string(body))
+			}
+		},
+	}
+
+	cmd.Flags().BoolVar(&all, "all", false, "Trigger reconciliation for all SyncTargets")
+
+	return cmd
 }
 
 func getEndpoint(kind string) string {
