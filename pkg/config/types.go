@@ -18,7 +18,6 @@ type Config struct {
 
 type ServerConfig struct {
 	Address     string `yaml:"address" json:"address"`
-	Name        string `yaml:"name" json:"name"`
 	HealthCheck bool   `yaml:"healthCheck" json:"healthCheck"`
 	Metrics     bool   `yaml:"metrics" json:"metrics"`
 }
@@ -36,20 +35,20 @@ type MetricsConfig struct {
 }
 
 type EtcdConfig struct {
-	// External etcd endpoints
 	Endpoints []string `yaml:"endpoints" json:"endpoints"`
 
-	// Kubernetes service discovery
-	UseKubernetesDiscovery bool   `yaml:"useKubernetesDiscovery" json:"useKubernetesDiscovery"`
-	KubernetesServiceName  string `yaml:"kubernetesServiceName" json:"kubernetesServiceName"`
-	KubernetesNamespace    string `yaml:"kubernetesNamespace" json:"kubernetesNamespace"`
+	DataDir   string `yaml:"dataDir" json:"dataDir"`
+	AutoJoin  bool   `yaml:"autoJoin" json:"autoJoin"`
+	Discovery string `yaml:"discovery" json:"discovery"` // "auto", "k8s", "gossip", "static"
 
-	// Embedded etcd (for manual deployment)
-	DataDir        string `yaml:"dataDir" json:"dataDir"`
+	// Static/manual configuration (used when AutoJoin=false or Discovery="static")
 	Name           string `yaml:"name" json:"name"`
 	PeerAddr       string `yaml:"peerAddr" json:"peerAddr"`
 	ClientAddr     string `yaml:"clientAddr" json:"clientAddr"`
 	InitialCluster string `yaml:"initialCluster" json:"initialCluster"`
+
+	BindAddr  string   `yaml:"bindAddr" json:"bindAddr"`
+	SeedAddrs []string `yaml:"seedAddrs" json:"seedAddrs"`
 }
 
 type WorkersConfig struct {
@@ -61,7 +60,6 @@ func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Address:     ":8080",
-			Name:        "lexicore",
 			HealthCheck: true,
 			Metrics:     true,
 		},
@@ -76,16 +74,16 @@ func DefaultConfig() *Config {
 			Path:    "/metrics",
 		},
 		Etcd: EtcdConfig{
-			// Auto-detect Kubernetes
-			UseKubernetesDiscovery: true,
-			KubernetesServiceName:  "lexicore-etcd",
-			KubernetesNamespace:    "default",
-			// Fallback to embedded
-			DataDir:        "lexicore.etcd",
+			Endpoints:      []string{}, // Empty means use embedded
+			DataDir:        "/var/lib/lexicore/etcd",
+			AutoJoin:       false,
+			Discovery:      "static",
 			Name:           "node-1",
-			PeerAddr:       "http://localhost:2380",
-			ClientAddr:     "http://localhost:2379",
+			PeerAddr:       "http://0.0.0.0:2380",
+			ClientAddr:     "http://0.0.0.0:2379",
 			InitialCluster: "node-1=http://localhost:2380",
+			BindAddr:       "0.0.0.0",
+			SeedAddrs:      []string{},
 		},
 		DefaultSyncPeriod: 5 * time.Minute,
 		Workers: WorkersConfig{

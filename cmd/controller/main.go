@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 
 	"codeberg.org/lexicore/lexicore/pkg/config"
 	"codeberg.org/lexicore/lexicore/pkg/controller"
+	"codeberg.org/lexicore/lexicore/pkg/discovery"
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -56,18 +58,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var endpoints []string
 	var etcdServer *embed.Etcd
+	var endpoints []string
 
 	if len(cfg.Etcd.Endpoints) > 0 {
 		endpoints = cfg.Etcd.Endpoints
-		logger.Info("Using external etcd", zap.Strings("endpoints", endpoints))
+		logger.Info("Using external etcd cluster",
+			zap.Strings("endpoints", endpoints))
 	} else {
 		etcdServer = startEmbeddedHA(cfg.Etcd, logger)
 		defer etcdServer.Close()
-		endpoints = []string{cfg.Etcd.ClientAddr}
-		logger.Info("Using embedded etcd", zap.String("addr", cfg.Etcd.ClientAddr))
+
+		endpoints = getEtcdEndpoints(cfg.Etcd, logger)
 	}
+
+	// Wait a moment for etcd to stabilize
+	time.Sleep(2 * time.Second)
 
 	db, err := store.NewEtcdStore(endpoints, 5*time.Second)
 	if err != nil {
@@ -455,24 +461,135 @@ func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 
 func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 	eCfg := embed.NewConfig()
-	eCfg.Name = c.Name
 	eCfg.Dir = c.DataDir
+	eCfg.LogLevel = "warn" // Reduce etcd noise in logs
 
-	cu, err := url.Parse(c.ClientAddr)
-	if err != nil {
-		logger.Fatal("Invalid client URL", zap.Error(err))
+	var nodeName, nodeIP, initialCluster string
+	var clusterState string
+
+	if c.AutoJoin {
+		var disco discovery.Discovery
+		var err error
+
+		switch c.Discovery {
+		case "k8s":
+			disco, err = discovery.NewK8sDiscovery()
+		case "gossip":
+			disco, err = discovery.NewGossipDiscovery(c.BindAddr, c.SeedAddrs)
+		case "auto":
+			disco, err = discovery.Auto()
+		default:
+			logger.Fatal("Invalid discovery mode",
+				zap.String("mode", c.Discovery))
+		}
+
+		if err != nil {
+			logger.Fatal("Discovery initialization failed",
+				zap.String("mode", c.Discovery),
+				zap.Error(err))
+		}
+
+		nodeName = disco.GetNodeName()
+		nodeIP = disco.GetNodeIP()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		peers, err := disco.GetPeers(ctx)
+		if err != nil {
+			logger.Warn("Failed to discover peers, starting as new cluster",
+				zap.Error(err))
+			peers = []string{}
+		}
+
+		selfPeer := fmt.Sprintf("%s=http://%s:2380", nodeName, nodeIP)
+
+		if len(peers) > 0 {
+			found := false
+			for _, peer := range peers {
+				if peer == selfPeer {
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				peers = append(peers, selfPeer)
+			}
+
+			initialCluster = strings.Join(peers, ",")
+			clusterState = "existing"
+
+			logger.Info("Joining existing cluster",
+				zap.String("node", nodeName),
+				zap.String("ip", nodeIP),
+				zap.Int("peers", len(peers)),
+				zap.String("cluster", initialCluster))
+		} else {
+			initialCluster = selfPeer
+			clusterState = "new"
+
+			logger.Info("Starting new cluster",
+				zap.String("node", nodeName),
+				zap.String("ip", nodeIP))
+		}
+
+		if g, ok := disco.(*discovery.GossipDiscovery); ok {
+			defer g.Close()
+		}
+	} else {
+		nodeName = c.Name
+		initialCluster = c.InitialCluster
+		clusterState = "new"
+
+		logger.Info("Starting with static configuration",
+			zap.String("node", nodeName),
+			zap.String("cluster", initialCluster))
 	}
 
-	pu, err := url.Parse(c.PeerAddr)
-	if err != nil {
-		logger.Fatal("Invalid peer URL", zap.Error(err))
+	eCfg.Name = nodeName
+
+	if c.AutoJoin {
+		clientURL := url.URL{Scheme: "http", Host: fmt.Sprintf("%s:2379", nodeIP)}
+		peerURL := url.URL{Scheme: "http", Host: fmt.Sprintf("%s:2380", nodeIP)}
+
+		eCfg.ListenClientUrls = []url.URL{clientURL}
+		eCfg.AdvertiseClientUrls = []url.URL{clientURL}
+		eCfg.ListenPeerUrls = []url.URL{peerURL}
+		eCfg.AdvertisePeerUrls = []url.URL{peerURL}
+	} else {
+		cu, err := url.Parse(c.ClientAddr)
+		if err != nil {
+			logger.Fatal("Invalid client URL", zap.Error(err))
+		}
+
+		pu, err := url.Parse(c.PeerAddr)
+		if err != nil {
+			logger.Fatal("Invalid peer URL", zap.Error(err))
+		}
+
+		eCfg.ListenClientUrls = []url.URL{*cu}
+		eCfg.AdvertiseClientUrls = []url.URL{*cu}
+		eCfg.ListenPeerUrls = []url.URL{*pu}
+		eCfg.AdvertisePeerUrls = []url.URL{*pu}
 	}
 
-	eCfg.ListenClientUrls = []url.URL{*cu}
-	eCfg.AdvertiseClientUrls = []url.URL{*cu}
-	eCfg.ListenPeerUrls = []url.URL{*pu}
-	eCfg.AdvertisePeerUrls = []url.URL{*pu}
-	eCfg.InitialCluster = c.InitialCluster
+	eCfg.InitialCluster = initialCluster
+	eCfg.ClusterState = clusterState
+
+	eCfg.MaxSnapFiles = 5
+	eCfg.MaxWalFiles = 5
+	eCfg.SnapshotCount = 10000
+	eCfg.AutoCompactionRetention = "1h"
+	eCfg.AutoCompactionMode = "periodic"
+
+	logger.Info("Starting embedded etcd",
+		zap.String("name", eCfg.Name),
+		zap.String("data_dir", eCfg.Dir),
+		zap.String("client_urls", eCfg.ListenClientUrls[0].String()),
+		zap.String("peer_urls", eCfg.ListenPeerUrls[0].String()),
+		zap.String("initial_cluster", eCfg.InitialCluster),
+		zap.String("cluster_state", eCfg.ClusterState))
 
 	e, err := embed.StartEtcd(eCfg)
 	if err != nil {
@@ -481,13 +598,49 @@ func startEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 
 	select {
 	case <-e.Server.ReadyNotify():
-		logger.Info("Embedded etcd ready")
+		logger.Info("Embedded etcd ready",
+			zap.String("node", eCfg.Name),
+			zap.String("cluster_state", clusterState))
 	case <-time.After(60 * time.Second):
 		e.Close()
-		logger.Fatal("Etcd failed to become ready")
+		logger.Fatal("Etcd failed to become ready within timeout")
+	case <-e.Server.StopNotify():
+		logger.Fatal("Etcd stopped unexpectedly during startup")
 	}
 
 	return e
+}
+
+func getEtcdEndpoints(cfg config.EtcdConfig, logger *zap.Logger) []string {
+	if len(cfg.Endpoints) > 0 {
+		logger.Info("Using external etcd endpoints",
+			zap.Strings("endpoints", cfg.Endpoints))
+		return cfg.Endpoints
+	}
+
+	if cfg.AutoJoin {
+		nodeIP := os.Getenv("POD_IP")
+		if nodeIP == "" {
+			nodeIP = os.Getenv("NODE_IP")
+		}
+		if nodeIP == "" {
+			nodeIP = "localhost"
+		}
+		endpoint := fmt.Sprintf("http://%s:2379", nodeIP)
+		logger.Info("Using embedded etcd endpoint",
+			zap.String("endpoint", endpoint))
+		return []string{endpoint}
+	}
+
+	cu, err := url.Parse(cfg.ClientAddr)
+	if err != nil {
+		logger.Fatal("Invalid client URL", zap.Error(err))
+	}
+
+	endpoint := cu.String()
+	logger.Info("Using static etcd endpoint",
+		zap.String("endpoint", endpoint))
+	return []string{endpoint}
 }
 
 func initLogger(c config.LoggingConfig) *zap.Logger {
