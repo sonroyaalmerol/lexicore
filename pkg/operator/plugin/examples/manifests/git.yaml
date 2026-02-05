@@ -1,0 +1,20 @@
+apiVersion: lexicore.io/v1
+kind: SyncTarget
+metadata:
+  name: mail-provisioning
+spec:
+  sourceRef: authentik
+  operator: mail
+  dryRun: true
+  pluginSource:
+    type: git
+    git:
+      url: https://github.com/myorg/lexicore-plugins.git
+      ref: v1.2.0  # or branch name or commit SHA
+      path: operators/mail.star
+      auth:
+        secretRef: git-credentials
+  config:
+    url: "https://test.test.com/iredadmin"
+    username: "test@test.com"
+    password: ""

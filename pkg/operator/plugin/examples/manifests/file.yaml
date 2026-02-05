@@ -1,0 +1,22 @@
+apiVersion: lexicore.io/v1
+kind: SyncTarget
+metadata:
+  name: mail-provisioning
+spec:
+  sourceRef: authentik
+  operator: mail
+  dryRun: true
+  pluginSource:
+    type: file
+    file:
+      path: /etc/lexicore/plugins/mail.star
+  config:
+    url: "https://test.test.com/iredadmin"
+    username: "test@test.com"
+    password: ""
+  transformers:
+    - name: mail-settings
+      type: template
+      config:
+        templates:
+          iredadmin:cn: "{{ .DisplayName }}"

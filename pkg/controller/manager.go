@@ -26,6 +26,8 @@ type Manager struct {
 	identitySources *xsync.Map[string, *manifest.IdentitySource]
 	reconcilers     *xsync.Map[string, *Reconciler]
 
+	pluginManager *operator.PluginManager
+
 	queue  chan reconcileTask
 	cfg    *config.Config
 	logger *zap.Logger
@@ -43,6 +45,7 @@ func NewManager(cfg *config.Config, logger *zap.Logger) *Manager {
 		syncTargets:     xsync.NewMap[string, *manifest.SyncTarget](),
 		identitySources: xsync.NewMap[string, *manifest.IdentitySource](),
 		reconcilers:     xsync.NewMap[string, *Reconciler](),
+		pluginManager:   operator.NewPluginManager("/var/lib/lexicore/plugins"),
 		queue:           make(chan reconcileTask, cfg.Workers.QueueSize),
 		cfg:             cfg,
 		logger:          logger,
@@ -99,6 +102,19 @@ func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
 func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 	if _, ok := m.sources.Load(target.Spec.SourceRef); !ok {
 		return fmt.Errorf("source %s not found", target.Spec.SourceRef)
+	}
+
+	if target.Spec.PluginSource != nil {
+		status, err := m.pluginManager.LoadPlugin(
+			m.shutdownCtx,
+			target.Spec.PluginSource,
+		)
+
+		target.Status.PluginStatus = status
+
+		if err != nil {
+			return fmt.Errorf("failed to load plugin: %w", err)
+		}
 	}
 
 	if _, ok := m.operators.Load(target.Spec.Operator); !ok {
