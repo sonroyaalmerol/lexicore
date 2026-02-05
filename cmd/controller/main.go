@@ -303,6 +303,7 @@ func handleStoreEvent(ctx context.Context, mgr *controller.Manager, kind string,
 			logger.Error("Failed to unmarshal sync target", zap.String("name", name), zap.Error(err))
 			return
 		}
+		logger.Info("test", zap.Any("newManifest", m))
 
 		op, err := operator.Create(m.Spec.Operator)
 		if err != nil {
@@ -428,6 +429,85 @@ func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
+	})
+
+	mux.HandleFunc("/apis/lexicore.io/v1/identitysources/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/apis/lexicore.io/v1/identitysources/")
+		parts := strings.Split(path, "/")
+
+		if len(parts) < 1 || parts[0] == "" {
+			http.Error(w, "Identity source name required", http.StatusBadRequest)
+			return
+		}
+
+		sourceName := parts[0]
+
+		if len(parts) == 2 && parts[1] == "details" {
+			if r.Method != http.MethodGet {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+
+			src, ok := mgr.GetIdentitySource(sourceName)
+			if !ok {
+				http.Error(w, fmt.Sprintf("Identity source %q not found", sourceName), http.StatusNotFound)
+				return
+			}
+
+			logger.Info("Fetching details for identity source",
+				zap.String("source", sourceName),
+				zap.String("remote_addr", r.RemoteAddr))
+
+			detailCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			identities, err := src.GetIdentities(detailCtx)
+			if err != nil {
+				logger.Error("Failed to fetch identities",
+					zap.String("source", sourceName),
+					zap.Error(err))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": fmt.Sprintf("Failed to fetch identities: %v", err),
+				})
+				return
+			}
+
+			groups, err := src.GetGroups(detailCtx)
+			if err != nil {
+				logger.Error("Failed to fetch groups",
+					zap.String("source", sourceName),
+					zap.Error(err))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": fmt.Sprintf("Failed to fetch groups: %v", err),
+				})
+				return
+			}
+
+			response := map[string]any{
+				"source": sourceName,
+				"identities": map[string]any{
+					"count": len(identities),
+					"items": identities,
+				},
+				"groups": map[string]any{
+					"count": len(groups),
+					"items": groups,
+				},
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				logger.Error("Failed to encode response", zap.Error(err))
+			}
+			return
+		}
+
+		http.Error(w, "Not found", http.StatusNotFound)
 	})
 
 	mux.HandleFunc("/apis/lexicore.io/v1/synctargets", func(w http.ResponseWriter, r *http.Request) {

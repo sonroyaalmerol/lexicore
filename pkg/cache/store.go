@@ -2,6 +2,7 @@ package cache
 
 import (
 	"sync"
+	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/gohugoio/hashstructure"
@@ -11,6 +12,7 @@ type Store struct {
 	name       string
 	identities map[string]uint64
 	groups     map[string]uint64
+	lastSet    time.Time
 	mu         sync.RWMutex
 }
 
@@ -20,6 +22,10 @@ func NewStore(name string) *Store {
 		identities: make(map[string]uint64),
 		groups:     make(map[string]uint64),
 	}
+}
+
+func (s *Store) IsFresh() bool {
+	return s.lastSet.IsZero()
 }
 
 func (s *Store) GetIdentityHash(key string) (uint64, bool) {
@@ -34,6 +40,7 @@ func (s *Store) UpdateIdentities(identities map[string]source.Identity) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.lastSet = time.Now()
 	s.identities = make(map[string]uint64, len(identities))
 	for key, identity := range identities {
 		hash, err := hashstructure.Hash(identity, nil)
@@ -94,6 +101,7 @@ func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.lastSet = time.Time{}
 	s.identities = make(map[string]uint64)
 	s.groups = make(map[string]uint64)
 }

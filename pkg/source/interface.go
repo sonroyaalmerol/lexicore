@@ -11,6 +11,7 @@ type Identity struct {
 	Groups      []string
 	Attributes  map[string]any
 	DisplayName string
+	Disabled    bool
 }
 
 type Group struct {

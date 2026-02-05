@@ -1,0 +1,10 @@
+apiVersion: lexicore.io/v1
+kind: IdentitySource
+metadata:
+  name: authentik
+spec:
+  type: authentik
+  config:
+    url: https://test.authentik.com/api/v3/
+    token: "test"
+    pageSize: 100

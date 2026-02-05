@@ -256,6 +256,10 @@ func (m *Manager) reconcile(ctx context.Context, target *manifest.SyncTarget) er
 	return reconciler.Reconcile(ctx)
 }
 
+func (m *Manager) GetIdentitySource(name string) (source.Source, bool) {
+	return m.sources.Load(name)
+}
+
 func (m *Manager) RemoveIdentitySource(name string) {
 	m.identitySources.Delete(name)
 	if src, ok := m.sources.LoadAndDelete(name); ok {

@@ -141,6 +141,7 @@ func (s *AuthentikSource) mapUser(u authentik.User) source.Identity {
 		DisplayName: u.Name,
 		Groups:      u.Groups,
 		Attributes:  u.Attributes,
+		Disabled:    !u.GetIsActive(),
 	}
 }
 

@@ -31,6 +31,7 @@ func main() {
 	rootCmd.AddCommand(newGetCommand())
 	rootCmd.AddCommand(newDeleteCommand())
 	rootCmd.AddCommand(newReconcileCommand())
+	rootCmd.AddCommand(newInspectCommand())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -261,6 +262,99 @@ or use --all to reconcile all SyncTargets at once.`,
 	return cmd
 }
 
+func newInspectCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "inspect identitysource [name]",
+		Short: "Inspect details of an identity source",
+		Long:  "Display all identities and groups from a specific identity source",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			if args[0] != "identitysource" {
+				fmt.Printf("Error: only 'identitysource' is supported for inspection\n")
+				return
+			}
+
+			sourceName := args[1]
+			url := fmt.Sprintf("%s%s/identitysources/%s/details", serverAddr, apiPrefix, sourceName)
+
+			resp, err := http.Get(url)
+			if err != nil {
+				fmt.Printf("Error connecting to server: %v\n", err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				fmt.Printf("Error from server (%d): %s\n", resp.StatusCode, string(body))
+				return
+			}
+
+			var result map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				fmt.Printf("Error decoding response: %v\n", err)
+				return
+			}
+
+			fmt.Printf("\n=== Identity Source: %s ===\n\n", sourceName)
+
+			// Display identities
+			if identitiesData, ok := result["identities"].(map[string]any); ok {
+				count := identitiesData["count"]
+				items := identitiesData["items"].(map[string]any)
+
+				fmt.Printf("Identities (%v):\n", count)
+				w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', 0)
+				fmt.Fprintln(w, "UID\tUSERNAME\tEMAIL\tDISPLAY NAME\tGROUPS")
+
+				for uid, identity := range items {
+					id := identity.(map[string]any)
+					username := getStringField(id, "Username")
+					email := getStringField(id, "Email")
+					displayName := getStringField(id, "DisplayName")
+
+					groups := ""
+					if groupList, ok := id["Groups"].([]any); ok && len(groupList) > 0 {
+						groupStrs := make([]string, len(groupList))
+						for i, g := range groupList {
+							groupStrs[i] = fmt.Sprintf("%v", g)
+						}
+						groups = fmt.Sprintf("%d groups", len(groupStrs))
+					}
+
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", uid, username, email, displayName, groups)
+				}
+				w.Flush()
+				fmt.Println()
+			}
+
+			// Display groups
+			if groupsData, ok := result["groups"].(map[string]any); ok {
+				count := groupsData["count"]
+				items := groupsData["items"].(map[string]any)
+
+				fmt.Printf("Groups (%v):\n", count)
+				w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', 0)
+				fmt.Fprintln(w, "GID\tNAME\tDESCRIPTION\tMEMBERS")
+
+				for gid, group := range items {
+					grp := group.(map[string]any)
+					name := getStringField(grp, "Name")
+					desc := getStringField(grp, "Description")
+
+					memberCount := 0
+					if members, ok := grp["Members"].([]any); ok {
+						memberCount = len(members)
+					}
+
+					fmt.Fprintf(w, "%s\t%s\t%s\t%d members\n", gid, name, desc, memberCount)
+				}
+				w.Flush()
+			}
+		},
+	}
+}
+
 func getEndpoint(kind string) string {
 	switch kind {
 	case "IdentitySource", "identitysource", "is", "identitysources":
@@ -270,4 +364,11 @@ func getEndpoint(kind string) string {
 	default:
 		return ""
 	}
+}
+
+func getStringField(m map[string]any, field string) string {
+	if val, ok := m[field]; ok {
+		return fmt.Sprintf("%v", val)
+	}
+	return ""
 }

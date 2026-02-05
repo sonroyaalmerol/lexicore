@@ -74,25 +74,27 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		zap.Int("groups", len(transformedGroups)),
 	)
 
-	diff, err := r.cache.CalculateDiff(transformedIdentities, transformedGroups)
-	if err != nil {
-		return fmt.Errorf("failed to calculate diff: %w", err)
-	}
+	if !r.cache.IsFresh() {
+		diff, err := r.cache.CalculateDiff(transformedIdentities, transformedGroups)
+		if err != nil {
+			return fmt.Errorf("failed to calculate diff: %w", err)
+		}
 
-	r.logger.Info(
-		"Calculated diff",
-		zap.Int("identities_to_create", len(diff.IdentitiesToCreate)),
-		zap.Int("identities_to_update", len(diff.IdentitiesToUpdate)),
-		zap.Int("identities_to_delete", len(diff.IdentitiesToDelete)),
-		zap.Int("groups_to_create", len(diff.GroupsToCreate)),
-		zap.Int("groups_to_update", len(diff.GroupsToUpdate)),
-		zap.Int("groups_to_delete", len(diff.GroupsToDelete)),
-	)
+		r.logger.Info(
+			"Calculated diff",
+			zap.Int("identities_to_create", len(diff.IdentitiesToCreate)),
+			zap.Int("identities_to_update", len(diff.IdentitiesToUpdate)),
+			zap.Int("identities_to_delete", len(diff.IdentitiesToDelete)),
+			zap.Int("groups_to_create", len(diff.GroupsToCreate)),
+			zap.Int("groups_to_update", len(diff.GroupsToUpdate)),
+			zap.Int("groups_to_delete", len(diff.GroupsToDelete)),
+		)
 
-	if !diff.HasChanges() {
-		r.logger.Info("No changes detected, skipping sync")
-		r.updateStatus(true, "No changes detected", 0, 0)
-		return nil
+		if !diff.HasChanges() {
+			r.logger.Info("No changes detected, skipping sync")
+			r.updateStatus(true, "No changes detected", 0, 0)
+			return nil
+		}
 	}
 
 	result, err := r.syncToTarget(ctx, transformedIdentities, transformedGroups)

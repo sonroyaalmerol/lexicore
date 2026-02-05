@@ -3,18 +3,18 @@ kind: SyncTarget
 metadata:
   name: mail-provisioning
 spec:
-  sourceRef: authentik-source
+  sourceRef: authentik
   operator: iredadmin
+  dryRun: true
   config:
-    url: "https://mail.example.com/iredadmin"
-    api_key: "${IREDADMIN_API_KEY}"
+    url: "https://test.test.com/iredadmin"
+    username: "test@test.com"
+    password: ""
   transformers:
     - name: mail-settings
       type: template
       config:
         templates:
-          # Settings prefixed with 'iredadmin:' are passed as parameters to iRedAdmin API
-          iredadmin:quota: "1024"        # MB
-          iredadmin:language: "en_US"
-          iredadmin:enable_imap: "yes"
-          iredadmin:enable_pop3: "no"
+          iredadmin:cn: "{{ .DisplayName }}"
+          iredadmin:givenName: "{{ .Attributes.givenName }}"
+          iredadmin:sn: "{{ .Attributes.sn }}"
