@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -17,26 +18,61 @@ type Config struct {
 }
 
 type AuthentikSource struct {
+	*source.BaseSource
+
+	mu     sync.Mutex
 	config *Config
 	client *authentik.APIClient
 }
 
-func NewAuthentikSource(cfg *Config) *AuthentikSource {
+func (o *AuthentikSource) Initialize(ctx context.Context, config map[string]any) error {
+	o.SetConfig(config)
+	return o.Validate(ctx)
+}
+
+func (o *AuthentikSource) Validate(ctx context.Context) error {
+	url, err := o.GetStringConfig("url")
+	if err != nil {
+		return err
+	}
+
+	token, err := o.GetStringConfig("token")
+	if err != nil {
+		return err
+	}
+
+	pageSize := int32(100)
+	pageSizeRaw, ok := o.GetConfig("pageSize")
+	if ok {
+		if pageSize, ok = pageSizeRaw.(int32); !ok {
+			pageSize = int32(100)
+		}
+	}
+
+	o.mu.Lock()
+	o.config = &Config{
+		URL:      url,
+		Token:    token,
+		PageSize: pageSize,
+	}
+
 	apiConfig := authentik.NewConfiguration()
 	apiConfig.Servers = authentik.ServerConfigurations{
 		{
-			URL: cfg.URL,
+			URL: url,
 		},
 	}
-	apiConfig.AddDefaultHeader("Authorization", fmt.Sprintf("Bearer %s", cfg.Token))
+	apiConfig.AddDefaultHeader("Authorization", fmt.Sprintf("Bearer %s", token))
 
-	return &AuthentikSource{
-		config: cfg,
-		client: authentik.NewAPIClient(apiConfig),
-	}
+	o.client = authentik.NewAPIClient(apiConfig)
+	o.mu.Unlock()
+	return nil
 }
 
 func (s *AuthentikSource) Connect(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	_, _, err := s.client.CoreApi.CoreUsersMeRetrieve(ctx).Execute()
 	if err != nil {
 		return fmt.Errorf("failed to connect to authentik: %w", err)
@@ -45,13 +81,18 @@ func (s *AuthentikSource) Connect(ctx context.Context) error {
 }
 
 func (s *AuthentikSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
+	s.mu.Lock()
+	client := s.client
+	config := s.config
+	s.mu.Unlock()
+
 	identities := make(map[string]source.Identity)
 	page := int32(1)
 
 	for {
-		req := s.client.CoreApi.CoreUsersList(ctx).Page(page)
-		if s.config.PageSize > 0 {
-			req = req.PageSize(s.config.PageSize)
+		req := client.CoreApi.CoreUsersList(ctx).Page(page)
+		if config.PageSize > 0 {
+			req = req.PageSize(config.PageSize)
 		}
 
 		resp, _, err := req.Execute()
@@ -73,13 +114,18 @@ func (s *AuthentikSource) GetIdentities(ctx context.Context) (map[string]source.
 }
 
 func (s *AuthentikSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
+	s.mu.Lock()
+	client := s.client
+	config := s.config
+	s.mu.Unlock()
+
 	groups := make(map[string]source.Group)
 	page := int32(1)
 
 	for {
-		req := s.client.CoreApi.CoreGroupsList(ctx).Page(page)
-		if s.config.PageSize > 0 {
-			req = req.PageSize(s.config.PageSize)
+		req := client.CoreApi.CoreGroupsList(ctx).Page(page)
+		if config.PageSize > 0 {
+			req = req.PageSize(config.PageSize)
 		}
 
 		resp, _, err := req.Execute()

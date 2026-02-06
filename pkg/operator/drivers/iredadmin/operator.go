@@ -7,10 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"strings"
-	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -45,21 +43,8 @@ type UserData struct {
 
 type IRedAdminOperator struct {
 	*operator.BaseOperator
-	client  *http.Client
+	Client  *http.Client
 	baseURL string
-}
-
-func init() {
-	operator.Register("iredadmin", func() operator.Operator {
-		jar, _ := cookiejar.New(nil)
-		return &IRedAdminOperator{
-			BaseOperator: operator.NewBaseOperator("iredadmin"),
-			client: &http.Client{
-				Jar:     jar,
-				Timeout: 15 * time.Second,
-			},
-		}
-	})
 }
 
 func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]any) error {
@@ -96,7 +81,7 @@ func (o *IRedAdminOperator) login(ctx context.Context) error {
 	urlBuilder.WriteString(o.baseURL)
 	urlBuilder.WriteString("/api/login")
 
-	resp, err := o.client.PostForm(urlBuilder.String(), data)
+	resp, err := o.Client.PostForm(urlBuilder.String(), data)
 	if err != nil {
 		return err
 	}
@@ -177,7 +162,7 @@ func (o *IRedAdminOperator) getUserData(ctx context.Context, email string) (*Use
 	urlBuilder.WriteString("/api/user/")
 	urlBuilder.WriteString(url.PathEscape(email))
 
-	resp, err := o.client.Get(urlBuilder.String())
+	resp, err := o.Client.Get(urlBuilder.String())
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +301,7 @@ func (o *IRedAdminOperator) updateUser(ctx context.Context, id *source.Identity,
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := o.client.Do(req)
+	resp, err := o.Client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -326,7 +311,7 @@ func (o *IRedAdminOperator) updateUser(ctx context.Context, id *source.Identity,
 }
 
 func (o *IRedAdminOperator) execPost(ctx context.Context, url string, data url.Values) error {
-	resp, err := o.client.PostForm(url, data)
+	resp, err := o.Client.PostForm(url, data)
 	if err != nil {
 		return err
 	}

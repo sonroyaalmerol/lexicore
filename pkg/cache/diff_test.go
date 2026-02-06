@@ -9,7 +9,7 @@ import (
 )
 
 func TestCalculateDiff_IdentitiesCreate(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 	new := map[string]source.Identity{
 		"1": {UID: "1", Username: "user1", Email: "user1@example.com"},
 		"2": {UID: "2", Username: "user2", Email: "user2@example.com"},
@@ -25,7 +25,7 @@ func TestCalculateDiff_IdentitiesCreate(t *testing.T) {
 }
 
 func TestCalculateDiff_IdentitiesUpdate(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 	old := map[string]source.Identity{
 		"1": {UID: "1", Username: "user1", Email: "old@example.com"},
 	}
@@ -46,7 +46,7 @@ func TestCalculateDiff_IdentitiesUpdate(t *testing.T) {
 }
 
 func TestCalculateDiff_IdentitiesDelete(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 	old := map[string]source.Identity{
 		"1": {UID: "1", Username: "user1", Email: "user1@example.com"},
 		"2": {UID: "2", Username: "user2", Email: "user2@example.com"},
@@ -69,7 +69,7 @@ func TestCalculateDiff_IdentitiesDelete(t *testing.T) {
 }
 
 func TestCalculateDiff_NoChanges(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 	identities := map[string]source.Identity{
 		"1": {UID: "1", Username: "user1", Email: "user1@example.com"},
 	}
@@ -86,7 +86,7 @@ func TestCalculateDiff_NoChanges(t *testing.T) {
 }
 
 func TestCalculateDiff_Groups(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 	old := map[string]source.Group{
 		"1": {GID: "1", Name: "admins"},
 	}

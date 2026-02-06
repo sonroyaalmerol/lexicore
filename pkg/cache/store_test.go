@@ -9,7 +9,7 @@ import (
 )
 
 func TestStore_UpdateAndGetIdentities(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 
 	identities := map[string]source.Identity{
 		"1": {
@@ -38,7 +38,7 @@ func TestStore_UpdateAndGetIdentities(t *testing.T) {
 }
 
 func TestStore_UpdateAndGetGroups(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 
 	groups := map[string]source.Group{
 		"1": {
@@ -65,7 +65,7 @@ func TestStore_UpdateAndGetGroups(t *testing.T) {
 }
 
 func TestStore_Clear(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 
 	identities := map[string]source.Identity{
 		"1": {UID: "1", Username: "user1"},
@@ -89,7 +89,7 @@ func TestStore_Clear(t *testing.T) {
 }
 
 func TestStore_HashConsistency(t *testing.T) {
-	store := NewStore("test")
+	store := NewStore()
 
 	identity := source.Identity{
 		UID:      "1",

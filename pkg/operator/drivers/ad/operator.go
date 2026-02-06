@@ -16,14 +16,6 @@ type ADOperator struct {
 	conn *ldap.Conn
 }
 
-func init() {
-	operator.Register("active-directory", func() operator.Operator {
-		return &ADOperator{
-			BaseOperator: operator.NewBaseOperator("active-directory"),
-		}
-	})
-}
-
 func (o *ADOperator) Initialize(ctx context.Context, config map[string]any) error {
 	o.SetConfig(config)
 	return o.Validate(ctx)

@@ -27,44 +27,36 @@ func NewPluginManager(cacheDir string) *PluginManager {
 func (pm *PluginManager) LoadPlugin(
 	ctx context.Context,
 	source *manifest.PluginSource,
-) (*manifest.PluginStatus, error) {
-	status := &manifest.PluginStatus{}
-
+) (*PluginOperator, error) {
 	var scriptPath string
 	var err error
 
 	switch source.Type {
 	case "file":
 		if source.File == nil {
-			return status, fmt.Errorf("file source config is required")
+			return nil, fmt.Errorf("file source config is required")
 		}
 		scriptPath = source.File.Path
-		status.Loaded = true
 
 	case "git":
 		if source.Git == nil {
-			return status, fmt.Errorf("git source config is required")
+			return nil, fmt.Errorf("git source config is required")
 		}
-		scriptPath, status, err = pm.fetchFromGit(ctx, source.Git)
+		scriptPath, _, err = pm.fetchFromGit(ctx, source.Git)
 		if err != nil {
-			status.Loaded = false
-			status.Error = err.Error()
-			return status, err
+			return nil, err
 		}
 
 	default:
-		return status, fmt.Errorf("unsupported plugin source type: %s", source.Type)
+		return nil, fmt.Errorf("unsupported plugin source type: %s", source.Type)
 	}
 
-	err = registerStarlarkOperator(scriptPath)
+	op, err := NewPluginOperator(scriptPath)
 	if err != nil {
-		status.Loaded = false
-		status.Error = err.Error()
-		return status, fmt.Errorf("failed to load starlark operator: %w", err)
+		return nil, fmt.Errorf("failed to load plugin operator: %w", err)
 	}
 
-	status.Loaded = true
-	return status, nil
+	return op, nil
 }
 
 func (pm *PluginManager) fetchFromGit(

@@ -15,14 +15,6 @@ type LDAPOperator struct {
 	conn *ldap.Conn
 }
 
-func init() {
-	operator.Register("ldap", func() operator.Operator {
-		return &LDAPOperator{
-			BaseOperator: operator.NewBaseOperator("ldap"),
-		}
-	})
-}
-
 func (o *LDAPOperator) Initialize(ctx context.Context, config map[string]any) error {
 	o.SetConfig(config)
 	return o.Validate(ctx)

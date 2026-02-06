@@ -7,11 +7,11 @@ import (
 	"github.com/go-ldap/ldap/v3"
 )
 
-type Mapper struct {
-	config *MapperConfig
+type mapper struct {
+	config *mapperConfig
 }
 
-type MapperConfig struct {
+type mapperConfig struct {
 	UIDAttribute         string
 	UsernameAttribute    string
 	EmailAttribute       string
@@ -26,12 +26,12 @@ type MapperConfig struct {
 	ExtractDomainFromDN bool
 }
 
-func NewMapper(config *MapperConfig) *Mapper {
+func newMapper(config *mapperConfig) *mapper {
 	setDefaults(config)
-	return &Mapper{config: config}
+	return &mapper{config: config}
 }
 
-func setDefaults(c *MapperConfig) {
+func setDefaults(c *mapperConfig) {
 	if c.UIDAttribute == "" {
 		c.UIDAttribute = "uid"
 	}
@@ -61,7 +61,7 @@ func setDefaults(c *MapperConfig) {
 	}
 }
 
-func (m *Mapper) MapIdentity(entry *ldap.Entry) source.Identity {
+func (m *mapper) mapIdentity(entry *ldap.Entry) source.Identity {
 	identity := source.Identity{
 		UID:         entry.GetAttributeValue(m.config.UIDAttribute),
 		Username:    entry.GetAttributeValue(m.config.UsernameAttribute),
@@ -94,7 +94,7 @@ func (m *Mapper) MapIdentity(entry *ldap.Entry) source.Identity {
 	return identity
 }
 
-func (m *Mapper) MapGroup(entry *ldap.Entry) source.Group {
+func (m *mapper) mapGroup(entry *ldap.Entry) source.Group {
 	group := source.Group{
 		GID:         entry.GetAttributeValue(m.config.GIDAttribute),
 		Name:        entry.GetAttributeValue(m.config.GroupNameAttribute),
@@ -120,7 +120,7 @@ func (m *Mapper) MapGroup(entry *ldap.Entry) source.Group {
 	return group
 }
 
-func (m *Mapper) extractDomainFromDN(dn string) string {
+func (m *mapper) extractDomainFromDN(dn string) string {
 	parts := strings.Split(dn, ",")
 	var domainParts []string
 	for _, part := range parts {
@@ -132,7 +132,7 @@ func (m *Mapper) extractDomainFromDN(dn string) string {
 	return strings.Join(domainParts, ".")
 }
 
-func (m *Mapper) extractCNFromDN(dn string) string {
+func (m *mapper) extractCNFromDN(dn string) string {
 	parts := strings.Split(dn, ",")
 	for _, part := range parts {
 		trimmed := strings.TrimSpace(part)

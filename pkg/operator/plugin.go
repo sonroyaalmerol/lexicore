@@ -13,17 +13,17 @@ import (
 	"go.starlark.net/syntax"
 )
 
-type StarlarkOperator struct {
+type PluginOperator struct {
 	*BaseOperator
 	thread  *starlark.Thread
 	globals starlark.StringDict
 	module  *starlarkstruct.Module
 }
 
-func registerStarlarkOperator(scriptPath string) error {
+func NewPluginOperator(scriptPath string) (*PluginOperator, error) {
 	content, err := os.ReadFile(scriptPath)
 	if err != nil {
-		return fmt.Errorf("failed to read starlark script: %w", err)
+		return nil, fmt.Errorf("failed to read starlark script: %w", err)
 	}
 
 	name := filepath.Base(scriptPath)
@@ -40,13 +40,13 @@ func registerStarlarkOperator(scriptPath string) error {
 
 	globals, err := starlark.ExecFileOptions(opts, thread, scriptPath, content, predeclared)
 	if err != nil {
-		return fmt.Errorf("failed to execute starlark script: %w", err)
+		return nil, fmt.Errorf("failed to execute starlark script: %w", err)
 	}
 
 	requiredFuncs := []string{"initialize", "sync", "validate"}
 	for _, funcName := range requiredFuncs {
 		if _, ok := globals[funcName]; !ok {
-			return fmt.Errorf("starlark script missing required function: %s", funcName)
+			return nil, fmt.Errorf("starlark script missing required function: %s", funcName)
 		}
 	}
 
@@ -57,18 +57,14 @@ func registerStarlarkOperator(scriptPath string) error {
 		}
 	}
 
-	Register(operatorName, func() Operator {
-		return &StarlarkOperator{
-			BaseOperator: NewBaseOperator(operatorName),
-			thread:       thread,
-			globals:      globals,
-		}
-	})
-
-	return nil
+	return &PluginOperator{
+		BaseOperator: NewBaseOperator(operatorName),
+		thread:       thread,
+		globals:      globals,
+	}, nil
 }
 
-func (s *StarlarkOperator) Initialize(ctx context.Context, config map[string]any) error {
+func (s *PluginOperator) Initialize(ctx context.Context, config map[string]any) error {
 	s.SetConfig(config)
 
 	initFunc, ok := s.globals["initialize"]
@@ -81,7 +77,7 @@ func (s *StarlarkOperator) Initialize(ctx context.Context, config map[string]any
 		return fmt.Errorf("initialize is not callable")
 	}
 
-	configDict := goMapToStarlarkDict(config)
+	configDict := goMapToPluginDict(config)
 
 	args := starlark.Tuple{configDict}
 	result, err := starlark.Call(s.thread, callable, args, nil)
@@ -96,7 +92,7 @@ func (s *StarlarkOperator) Initialize(ctx context.Context, config map[string]any
 	return nil
 }
 
-func (s *StarlarkOperator) Validate(ctx context.Context) error {
+func (s *PluginOperator) Validate(ctx context.Context) error {
 	validateFunc, ok := s.globals["validate"]
 	if !ok {
 		return fmt.Errorf("validate function not found")
@@ -107,7 +103,7 @@ func (s *StarlarkOperator) Validate(ctx context.Context) error {
 		return fmt.Errorf("validate is not callable")
 	}
 
-	configDict := goMapToStarlarkDict(s.config)
+	configDict := goMapToPluginDict(s.config)
 	args := starlark.Tuple{configDict}
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
@@ -122,7 +118,7 @@ func (s *StarlarkOperator) Validate(ctx context.Context) error {
 	return nil
 }
 
-func (s *StarlarkOperator) Sync(ctx context.Context, state *SyncState) (*SyncResult, error) {
+func (s *PluginOperator) Sync(ctx context.Context, state *SyncState) (*SyncResult, error) {
 	syncFunc, ok := s.globals["sync"]
 	if !ok {
 		return nil, fmt.Errorf("sync function not found")
@@ -133,7 +129,7 @@ func (s *StarlarkOperator) Sync(ctx context.Context, state *SyncState) (*SyncRes
 		return nil, fmt.Errorf("sync is not callable")
 	}
 
-	stateDict := syncStateToStarlark(state)
+	stateDict := syncStateToPlugin(state)
 	args := starlark.Tuple{stateDict}
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
@@ -149,7 +145,7 @@ func (s *StarlarkOperator) Sync(ctx context.Context, state *SyncState) (*SyncRes
 	return syncResult, nil
 }
 
-func (s *StarlarkOperator) Close() error {
+func (s *PluginOperator) Close() error {
 	if closeFunc, ok := s.globals["close"]; ok {
 		if callable, ok := closeFunc.(starlark.Callable); ok {
 			_, err := starlark.Call(s.thread, callable, nil, nil)
@@ -161,15 +157,15 @@ func (s *StarlarkOperator) Close() error {
 	return nil
 }
 
-func goMapToStarlarkDict(m map[string]any) *starlark.Dict {
+func goMapToPluginDict(m map[string]any) *starlark.Dict {
 	dict := starlark.NewDict(len(m))
 	for k, v := range m {
-		dict.SetKey(starlark.String(k), goValueToStarlark(v))
+		dict.SetKey(starlark.String(k), goValueToPlugin(v))
 	}
 	return dict
 }
 
-func goValueToStarlark(v any) starlark.Value {
+func goValueToPlugin(v any) starlark.Value {
 	if v == nil {
 		return starlark.None
 	}
@@ -188,28 +184,28 @@ func goValueToStarlark(v any) starlark.Value {
 	case []any:
 		list := make([]starlark.Value, len(val))
 		for i, item := range val {
-			list[i] = goValueToStarlark(item)
+			list[i] = goValueToPlugin(item)
 		}
 		return starlark.NewList(list)
 	case map[string]any:
-		return goMapToStarlarkDict(val)
+		return goMapToPluginDict(val)
 	default:
 		return starlark.String(fmt.Sprintf("%v", v))
 	}
 }
 
-func syncStateToStarlark(state *SyncState) *starlark.Dict {
+func syncStateToPlugin(state *SyncState) *starlark.Dict {
 	dict := starlark.NewDict(3)
 
 	identities := starlark.NewDict(len(state.Identities))
 	for uid, identity := range state.Identities {
-		identities.SetKey(starlark.String(uid), identityToStarlark(&identity))
+		identities.SetKey(starlark.String(uid), identityToPlugin(&identity))
 	}
 	dict.SetKey(starlark.String("identities"), identities)
 
 	groups := starlark.NewDict(len(state.Groups))
 	for gid, group := range state.Groups {
-		groups.SetKey(starlark.String(gid), groupToStarlark(&group))
+		groups.SetKey(starlark.String(gid), groupToPlugin(&group))
 	}
 	dict.SetKey(starlark.String("groups"), groups)
 
@@ -218,7 +214,7 @@ func syncStateToStarlark(state *SyncState) *starlark.Dict {
 	return dict
 }
 
-func identityToStarlark(id *source.Identity) *starlark.Dict {
+func identityToPlugin(id *source.Identity) *starlark.Dict {
 	dict := starlark.NewDict(10)
 	dict.SetKey(starlark.String("uid"), starlark.String(id.UID))
 	dict.SetKey(starlark.String("username"), starlark.String(id.Username))
@@ -232,11 +228,11 @@ func identityToStarlark(id *source.Identity) *starlark.Dict {
 	}
 	dict.SetKey(starlark.String("groups"), starlark.NewList(groups))
 
-	dict.SetKey(starlark.String("attributes"), goMapToStarlarkDict(id.Attributes))
+	dict.SetKey(starlark.String("attributes"), goMapToPluginDict(id.Attributes))
 	return dict
 }
 
-func groupToStarlark(g *source.Group) *starlark.Dict {
+func groupToPlugin(g *source.Group) *starlark.Dict {
 	dict := starlark.NewDict(10)
 	dict.SetKey(starlark.String("gid"), starlark.String(g.GID))
 	dict.SetKey(starlark.String("name"), starlark.String(g.Name))
@@ -247,7 +243,7 @@ func groupToStarlark(g *source.Group) *starlark.Dict {
 		members[i] = starlark.String(member)
 	}
 	dict.SetKey(starlark.String("members"), starlark.NewList(members))
-	dict.SetKey(starlark.String("attributes"), goMapToStarlarkDict(g.Attributes))
+	dict.SetKey(starlark.String("attributes"), goMapToPluginDict(g.Attributes))
 
 	return dict
 }

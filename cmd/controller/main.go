@@ -19,14 +19,8 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/controller"
 	"codeberg.org/lexicore/lexicore/pkg/discovery"
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
-	"codeberg.org/lexicore/lexicore/pkg/operator"
-	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/store"
 
-	"go.etcd.io/etcd/api/v3/mvccpb"
-	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -116,19 +110,7 @@ func main() {
 	}
 	defer db.Close()
 
-	mgr := controller.NewManager(cfg, logger)
-
-	if err := loadExistingResources(ctx, db, mgr, logger); err != nil {
-		logger.Fatal("Failed to load existing resources", zap.Error(err))
-	}
-
-	watchCtx, cancelWatch := context.WithCancel(ctx)
-	defer cancelWatch()
-
-	go runWatchLoop(watchCtx, db, mgr, logger, "identitysources")
-	go runWatchLoop(watchCtx, db, mgr, logger, "synctargets")
-
-	go runLeaderElection(ctx, db, mgr, cfg.Etcd.Name, logger)
+	mgr := controller.NewManager(ctx, cfg, db, logger)
 
 	mux := http.NewServeMux()
 	setupRoutes(mux, ctx, db, mgr, logger)
@@ -151,8 +133,6 @@ func main() {
 	<-ctx.Done()
 	logger.Info("Shutting down...")
 
-	cancelWatch()
-
 	sCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(sCtx); err != nil {
@@ -160,249 +140,6 @@ func main() {
 	}
 
 	logger.Info("Shutdown complete")
-}
-
-func loadExistingResources(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) error {
-	sources, err := db.List(ctx, "identitysources")
-	if err != nil {
-		return fmt.Errorf("failed to list identity sources: %w", err)
-	}
-
-	for _, data := range sources {
-		var m manifest.IdentitySource
-		if err := json.Unmarshal(data, &m); err != nil {
-			logger.Error("Failed to unmarshal identity source", zap.Error(err))
-			continue
-		}
-
-		src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
-		if err != nil {
-			logger.Error("Failed to create source", zap.String("name", m.Name), zap.Error(err))
-			continue
-		}
-
-		mgr.RegisterSource(m.Name, src)
-		if err := mgr.AddIdentitySource(&m); err != nil {
-			logger.Error("Failed to add identity source", zap.String("name", m.Name), zap.Error(err))
-			continue
-		}
-
-		logger.Info("Loaded identity source", zap.String("name", m.Name))
-	}
-
-	targets, err := db.List(ctx, "synctargets")
-	if err != nil {
-		return fmt.Errorf("failed to list sync targets: %w", err)
-	}
-
-	for _, data := range targets {
-		var m manifest.SyncTarget
-		if err := json.Unmarshal(data, &m); err != nil {
-			logger.Error("Failed to unmarshal sync target", zap.Error(err))
-			continue
-		}
-
-		if m.Spec.PluginSource != nil {
-			status, err := mgr.PluginManager.LoadPlugin(
-				ctx,
-				m.Spec.PluginSource,
-			)
-			m.Status.PluginStatus = status
-
-			if err != nil {
-				return fmt.Errorf("failed to load plugin: %w", err)
-			}
-		}
-
-		op, err := operator.Create(m.Spec.Operator)
-		if err != nil {
-			logger.Error("Failed to create operator", zap.String("name", m.Name), zap.Error(err))
-			continue
-		}
-
-		if err := op.Initialize(ctx, m.Spec.Config); err != nil {
-			logger.Error("Failed to initialize operator", zap.String("name", m.Name), zap.Error(err))
-			continue
-		}
-
-		mgr.RegisterOperator(op)
-		if err := mgr.AddSyncTarget(&m); err != nil {
-			logger.Error("Failed to add sync target", zap.String("name", m.Name), zap.Error(err))
-			continue
-		}
-
-		logger.Info("Loaded sync target", zap.String("name", m.Name))
-	}
-
-	return nil
-}
-
-func runWatchLoop(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger, kind string) {
-	logger = logger.With(zap.String("kind", kind))
-	var rev int64 = 0
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("Watch loop stopping")
-			return
-		default:
-			wch := db.Watch(ctx, kind, rev)
-			for resp := range wch {
-				if resp.Canceled {
-					if resp.Err() == rpctypes.ErrCompacted {
-						rev = resp.CompactRevision
-						logger.Warn("Watch compacted, resetting revision", zap.Int64("rev", rev))
-					} else {
-						logger.Error("Watch canceled", zap.Error(resp.Err()))
-					}
-					break
-				}
-
-				for _, ev := range resp.Events {
-					rev = ev.Kv.ModRevision + 1
-					handleStoreEvent(ctx, mgr, kind, ev, logger)
-				}
-			}
-
-			// Check context before sleeping
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-		}
-	}
-}
-
-func handleStoreEvent(ctx context.Context, mgr *controller.Manager, kind string, ev *clientv3.Event, logger *zap.Logger) {
-	parts := strings.Split(string(ev.Kv.Key), "/")
-	name := parts[len(parts)-1]
-
-	if ev.Type == mvccpb.DELETE {
-		if kind == "identitysources" {
-			mgr.RemoveIdentitySource(name)
-		} else {
-			mgr.RemoveSyncTarget(name)
-		}
-		logger.Info("Resource deleted", zap.String("kind", kind), zap.String("name", name))
-		return
-	}
-
-	if kind == "identitysources" {
-		var m manifest.IdentitySource
-		if err := json.Unmarshal(ev.Kv.Value, &m); err != nil {
-			logger.Error("Failed to unmarshal identity source", zap.String("name", name), zap.Error(err))
-			return
-		}
-
-		src, err := source.Create(ctx, m.Spec.Type, m.Spec.Config)
-		if err != nil {
-			logger.Error("Failed to create source", zap.String("name", name), zap.Error(err))
-			return
-		}
-
-		mgr.RegisterSource(m.Name, src)
-		if err := mgr.AddIdentitySource(&m); err != nil {
-			logger.Error("Failed to add identity source", zap.String("name", name), zap.Error(err))
-			return
-		}
-
-		logger.Info("Identity source updated", zap.String("name", name))
-	} else {
-		var m manifest.SyncTarget
-		if err := json.Unmarshal(ev.Kv.Value, &m); err != nil {
-			logger.Error("Failed to unmarshal sync target", zap.String("name", name), zap.Error(err))
-			return
-		}
-		logger.Info("test", zap.Any("newManifest", m))
-
-		if m.Spec.PluginSource != nil {
-			status, err := mgr.PluginManager.LoadPlugin(
-				ctx,
-				m.Spec.PluginSource,
-			)
-			m.Status.PluginStatus = status
-
-			if err != nil {
-				logger.Error("Failed to load plugin", zap.String("name", name), zap.Error(err))
-				return
-			}
-		}
-
-		op, err := operator.Create(m.Spec.Operator)
-		if err != nil {
-			logger.Error("Failed to create operator", zap.String("name", name), zap.Error(err))
-			return
-		}
-
-		if err := op.Initialize(ctx, m.Spec.Config); err != nil {
-			logger.Error("Failed to initialize operator", zap.String("name", name), zap.Error(err))
-			return
-		}
-
-		mgr.RegisterOperator(op)
-		if err := mgr.AddSyncTarget(&m); err != nil {
-			logger.Error("Failed to add sync target", zap.String("name", name), zap.Error(err))
-			return
-		}
-
-		logger.Info("Sync target updated", zap.String("name", name))
-	}
-}
-
-func runLeaderElection(ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, nodeName string, logger *zap.Logger) {
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("Leader election stopping")
-			return
-		default:
-			session, err := concurrency.NewSession(db.Client(), concurrency.WithTTL(15))
-			if err != nil {
-				logger.Error("Election session failed", zap.Error(err))
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			election := concurrency.NewElection(session, "/lexicore/leader")
-			if err := election.Campaign(ctx, nodeName); err != nil {
-				logger.Debug("Campaign failed, retrying", zap.Error(err))
-				session.Close()
-				time.Sleep(time.Second)
-				continue
-			}
-
-			logger.Info("Node acquired leadership", zap.String("node", nodeName))
-
-			runCtx, cancel := context.WithCancel(ctx)
-
-			go func() {
-				select {
-				case <-session.Done():
-					logger.Warn("Leader session expired, stopping reconciliation")
-					cancel()
-				case <-runCtx.Done():
-				}
-			}()
-
-			if err := mgr.Start(runCtx); err != nil {
-				logger.Error("Manager stopped with error", zap.Error(err))
-			}
-
-			cancel()
-			session.Close()
-
-			logger.Info("Leadership released")
-
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				time.Sleep(time.Second)
-			}
-		}
-	}
 }
 
 func setupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) {

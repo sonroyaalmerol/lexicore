@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 )
@@ -17,18 +16,7 @@ type DoveadmRequest []any
 
 type DovecotOperator struct {
 	*operator.BaseOperator
-	client *http.Client
-}
-
-func init() {
-	operator.Register("dovecot-acl", func() operator.Operator {
-		return &DovecotOperator{
-			BaseOperator: operator.NewBaseOperator("dovecot-acl"),
-			client: &http.Client{
-				Timeout: 15 * time.Second,
-			},
-		}
-	})
+	Client *http.Client
 }
 
 func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any) error {
@@ -116,7 +104,7 @@ func (o *DovecotOperator) exec(ctx context.Context, apiURL, user, command string
 		req.SetBasicAuth("doveadm", password)
 	}
 
-	resp, err := o.client.Do(req)
+	resp, err := o.Client.Do(req)
 	if err != nil {
 		return err
 	}

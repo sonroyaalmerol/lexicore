@@ -23,6 +23,10 @@ type Group struct {
 }
 
 type Source interface {
+	Name() string
+	Initialize(ctx context.Context, config map[string]any) error
+	Validate(ctx context.Context) error
+
 	// Connect establishes connection to the source
 	Connect(ctx context.Context) error
 

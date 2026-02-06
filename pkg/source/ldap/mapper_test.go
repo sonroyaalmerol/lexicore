@@ -7,15 +7,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMapper_MapIdentity(t *testing.T) {
-	config := &MapperConfig{
+func TestMapper_mapIdentity(t *testing.T) {
+	config := &mapperConfig{
 		UIDAttribute:      "uid",
 		UsernameAttribute: "cn",
 		EmailAttribute:    "mail",
 		GroupsAttribute:   "memberOf",
 	}
 
-	mapper := NewMapper(config)
+	mapper := newMapper(config)
 
 	entry := ldap.NewEntry(
 		"cn=john,ou=users,dc=example,dc=com",
@@ -27,7 +27,7 @@ func TestMapper_MapIdentity(t *testing.T) {
 		},
 	)
 
-	identity := mapper.MapIdentity(entry)
+	identity := mapper.mapIdentity(entry)
 
 	assert.Equal(t, "john123", identity.UID)
 	assert.Equal(t, "john", identity.Username)
@@ -37,8 +37,8 @@ func TestMapper_MapIdentity(t *testing.T) {
 }
 
 func TestMapper_ExtractCNFromDN(t *testing.T) {
-	config := &MapperConfig{}
-	mapper := NewMapper(config)
+	config := &mapperConfig{}
+	mapper := newMapper(config)
 
 	tests := []struct {
 		name string
@@ -76,8 +76,8 @@ func TestMapper_ExtractCNFromDN(t *testing.T) {
 }
 
 func TestMapper_ExtractDomainFromDN(t *testing.T) {
-	config := &MapperConfig{}
-	mapper := NewMapper(config)
+	config := &mapperConfig{}
+	mapper := newMapper(config)
 
 	tests := []struct {
 		name string

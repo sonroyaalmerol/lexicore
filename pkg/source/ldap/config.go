@@ -3,22 +3,10 @@ package ldap
 import (
 	"fmt"
 	"strings"
-
-	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
-func init() {
-	source.Register("ldap", func(rawConfig map[string]any) (source.Source, error) {
-		cfg, mCfg, err := ParseConfig(rawConfig)
-		if err != nil {
-			return nil, err
-		}
-		return NewLDAPSource(cfg, mCfg), nil
-	})
-}
-
-func ParseConfig(raw map[string]any) (*Config, *MapperConfig, error) {
-	cfg := &Config{
+func parseConfig(raw map[string]any) (*config, *mapperConfig, error) {
+	cfg := &config{
 		URL:           getString(raw, "url"),
 		BindDN:        getString(raw, "bindDN"),
 		BindPassword:  getString(raw, "bindPassword"),
@@ -40,14 +28,14 @@ func ParseConfig(raw map[string]any) (*Config, *MapperConfig, error) {
 	ensureAttribute(&cfg.GroupAttributes, "cn")
 
 	if tlsRaw, ok := raw["tls"].(map[string]any); ok {
-		cfg.TLSConfig = &TLSConfig{
+		cfg.TLSConfig = &tlsConfig{
 			Enabled:            getBool(tlsRaw, "enabled"),
 			InsecureSkipVerify: getBool(tlsRaw, "insecureSkipVerify"),
 			CAFile:             getString(tlsRaw, "caFile"),
 		}
 	}
 
-	mCfg, _ := ParseMapperConfig(raw)
+	mCfg, _ := parseMapperConfig(raw)
 	return cfg, mCfg, nil
 }
 
@@ -60,8 +48,8 @@ func ensureAttribute(list *[]string, attr string) {
 	*list = append(*list, attr)
 }
 
-func ParseMapperConfig(c map[string]any) (*MapperConfig, error) {
-	return &MapperConfig{
+func parseMapperConfig(c map[string]any) (*mapperConfig, error) {
+	return &mapperConfig{
 		UIDAttribute:              getString(c, "uidAttribute"),
 		UsernameAttribute:         getString(c, "usernameAttribute"),
 		EmailAttribute:            getString(c, "emailAttribute"),

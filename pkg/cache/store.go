@@ -9,16 +9,14 @@ import (
 )
 
 type Store struct {
-	name       string
 	identities map[string]uint64
 	groups     map[string]uint64
 	lastSet    time.Time
 	mu         sync.RWMutex
 }
 
-func NewStore(name string) *Store {
+func NewStore() *Store {
 	return &Store{
-		name:       name,
 		identities: make(map[string]uint64),
 		groups:     make(map[string]uint64),
 	}

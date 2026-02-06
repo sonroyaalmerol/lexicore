@@ -3,13 +3,14 @@ package ldap
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/go-ldap/ldap/v3"
 )
 
-type Config struct {
+type config struct {
 	URL             string
 	BindDN          string
 	BindPassword    string
@@ -18,10 +19,10 @@ type Config struct {
 	GroupSelector   string
 	UserAttributes  []string
 	GroupAttributes []string
-	TLSConfig       *TLSConfig
+	TLSConfig       *tlsConfig
 }
 
-type TLSConfig struct {
+type tlsConfig struct {
 	Enabled            bool
 	InsecureSkipVerify bool
 	CertFile           string
@@ -30,19 +31,38 @@ type TLSConfig struct {
 }
 
 type LDAPSource struct {
-	config *Config
-	mapper *Mapper
+	*source.BaseSource
+
+	mu     sync.Mutex
+	config *config
+	mapper *mapper
 	conn   *ldap.Conn
 }
 
-func NewLDAPSource(config *Config, mapperConfig *MapperConfig) *LDAPSource {
-	return &LDAPSource{
-		config: config,
-		mapper: NewMapper(mapperConfig),
+func (l *LDAPSource) Initialize(ctx context.Context, config map[string]any) error {
+	l.SetConfig(config)
+
+	return l.Validate(ctx)
+}
+
+func (l *LDAPSource) Validate(ctx context.Context) error {
+	cfg, mCfg, err := parseConfig(l.GetRawConfig())
+	if err != nil {
+		return err
 	}
+
+	l.mu.Lock()
+	l.config = cfg
+	l.mapper = newMapper(mCfg)
+	l.mu.Unlock()
+
+	return nil
 }
 
 func (l *LDAPSource) Connect(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	conn, err := ldap.DialURL(l.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to dial LDAP: %w", err)
@@ -63,13 +83,17 @@ func (l *LDAPSource) Connect(ctx context.Context) error {
 }
 
 func (l *LDAPSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
+	l.mu.Lock()
+	config := l.config
+	l.mu.Unlock()
+
 	searchRequest := ldap.NewSearchRequest(
-		l.config.BaseDN,
+		config.BaseDN,
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
 		0, 0, false,
-		l.config.UserSelector,
-		l.config.UserAttributes,
+		config.UserSelector,
+		config.UserAttributes,
 		nil,
 	)
 
@@ -80,19 +104,23 @@ func (l *LDAPSource) GetIdentities(ctx context.Context) (map[string]source.Ident
 
 	identities := make(map[string]source.Identity)
 	for _, entry := range sr.Entries {
-		identities[entry.DN] = l.mapper.MapIdentity(entry)
+		identities[entry.DN] = l.mapper.mapIdentity(entry)
 	}
 	return identities, nil
 }
 
 func (l *LDAPSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
+	l.mu.Lock()
+	config := l.config
+	l.mu.Unlock()
+
 	searchRequest := ldap.NewSearchRequest(
-		l.config.BaseDN,
+		config.BaseDN,
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
 		0, 0, false,
-		l.config.GroupSelector,
-		l.config.GroupAttributes,
+		config.GroupSelector,
+		config.GroupAttributes,
 		nil,
 	)
 
@@ -103,15 +131,19 @@ func (l *LDAPSource) GetGroups(ctx context.Context) (map[string]source.Group, er
 
 	groups := make(map[string]source.Group)
 	for _, entry := range sr.Entries {
-		groups[entry.DN] = l.mapper.MapGroup(entry)
+		groups[entry.DN] = l.mapper.mapGroup(entry)
 	}
 	return groups, nil
 }
 
 func (l *LDAPSource) Watch(ctx context.Context) (<-chan source.Event, error) {
+	l.mu.Lock()
+	config := l.config
+	l.mu.Unlock()
+
 	events := make(chan source.Event)
-	combinedFilter := fmt.Sprintf("(|%s%s)", l.config.UserSelector, l.config.GroupSelector)
-	allAttributes := append(l.config.UserAttributes, l.config.GroupAttributes...)
+	combinedFilter := fmt.Sprintf("(|%s%s)", config.UserSelector, config.GroupSelector)
+	allAttributes := append(config.UserAttributes, config.GroupAttributes...)
 
 	go func() {
 		defer close(events)
@@ -119,7 +151,7 @@ func (l *LDAPSource) Watch(ctx context.Context) (<-chan source.Event, error) {
 		// Attempt RFC 4533 (SyncRepl)
 		syncControl := ldap.NewControlSyncRequest(ldap.SyncRequestModeRefreshAndPersist, nil, true)
 		searchRequest := ldap.NewSearchRequest(
-			l.config.BaseDN,
+			config.BaseDN,
 			ldap.ScopeWholeSubtree,
 			ldap.NeverDerefAliases,
 			0, 0, false,
@@ -127,7 +159,6 @@ func (l *LDAPSource) Watch(ctx context.Context) (<-chan source.Event, error) {
 			allAttributes,
 			[]ldap.Control{syncControl},
 		)
-
 		sr, err := l.conn.Search(searchRequest)
 
 		if err != nil && ldap.IsErrorWithCode(err, ldap.LDAPResultUnavailableCriticalExtension) {
@@ -164,11 +195,15 @@ func (l *LDAPSource) Watch(ctx context.Context) (<-chan source.Event, error) {
 }
 
 func (l *LDAPSource) runPollingWatch(ctx context.Context, events chan<- source.Event, filter string, attrs []string) {
+	l.mu.Lock()
+	config := l.config
+	l.mu.Unlock()
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	searchRequest := ldap.NewSearchRequest(
-		l.config.BaseDN,
+		config.BaseDN,
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
 		0, 0, false,
@@ -204,12 +239,16 @@ func (l *LDAPSource) sendEvent(ctx context.Context, events chan<- source.Event, 
 }
 
 func (l *LDAPSource) processSyncEntry(entry *ldap.Entry) source.Event {
-	isGroup := entry.GetAttributeValue(l.mapper.config.GIDAttribute) != ""
+	l.mu.Lock()
+	mapper := l.mapper
+	l.mu.Unlock()
+
+	isGroup := entry.GetAttributeValue(mapper.config.GIDAttribute) != ""
 
 	now := time.Now().Unix()
 
 	if isGroup {
-		g := l.mapper.MapGroup(entry)
+		g := mapper.mapGroup(entry)
 		return source.Event{
 			Type:      source.EventUpdate,
 			Group:     &g,
@@ -217,7 +256,7 @@ func (l *LDAPSource) processSyncEntry(entry *ldap.Entry) source.Event {
 		}
 	}
 
-	i := l.mapper.MapIdentity(entry)
+	i := mapper.mapIdentity(entry)
 	return source.Event{
 		Type:      source.EventUpdate,
 		Identity:  &i,
