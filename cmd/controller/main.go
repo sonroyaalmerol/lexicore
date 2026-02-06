@@ -202,6 +202,18 @@ func loadExistingResources(ctx context.Context, db *store.EtcdStore, mgr *contro
 			continue
 		}
 
+		if m.Spec.PluginSource != nil {
+			status, err := mgr.PluginManager.LoadPlugin(
+				ctx,
+				m.Spec.PluginSource,
+			)
+			m.Status.PluginStatus = status
+
+			if err != nil {
+				return fmt.Errorf("failed to load plugin: %w", err)
+			}
+		}
+
 		op, err := operator.Create(m.Spec.Operator)
 		if err != nil {
 			logger.Error("Failed to create operator", zap.String("name", m.Name), zap.Error(err))
@@ -304,6 +316,19 @@ func handleStoreEvent(ctx context.Context, mgr *controller.Manager, kind string,
 			return
 		}
 		logger.Info("test", zap.Any("newManifest", m))
+
+		if m.Spec.PluginSource != nil {
+			status, err := mgr.PluginManager.LoadPlugin(
+				ctx,
+				m.Spec.PluginSource,
+			)
+			m.Status.PluginStatus = status
+
+			if err != nil {
+				logger.Error("Failed to load plugin", zap.String("name", name), zap.Error(err))
+				return
+			}
+		}
 
 		op, err := operator.Create(m.Spec.Operator)
 		if err != nil {
