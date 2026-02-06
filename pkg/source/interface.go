@@ -4,6 +4,11 @@ import (
 	"context"
 )
 
+type SourceData struct {
+	Identities map[string]Identity
+	Groups     map[string]Group
+}
+
 type Identity struct {
 	UID         string
 	Username    string

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	starlarklib "codeberg.org/lexicore/lexicore/pkg/operator/plugin"
+	starlarklib "codeberg.org/lexicore/lexicore/pkg/plugin"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"

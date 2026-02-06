@@ -48,7 +48,7 @@ type Manager struct {
 	activeSources   *xsync.Map[string, *ActiveSource]
 	db              *store.EtcdStore
 
-	pluginManager *operator.PluginManager
+	pluginManager *PluginManager
 
 	queue  chan reconcileTask
 	cfg    *config.Config
@@ -67,7 +67,7 @@ func NewManager(ctx context.Context, cfg *config.Config, db *store.EtcdStore, lo
 		operatorFactory: xsync.NewMap[string, func() operator.Operator](),
 		activeOperators: xsync.NewMap[string, *ActiveOperator](),
 		activeSources:   xsync.NewMap[string, *ActiveSource](),
-		pluginManager:   operator.NewPluginManager("/var/lib/lexicore/plugins"),
+		pluginManager:   NewPluginManager("/var/lib/lexicore/plugins"),
 		queue:           make(chan reconcileTask, cfg.Workers.QueueSize),
 		cfg:             cfg,
 		logger:          logger,
@@ -163,15 +163,29 @@ func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
 		return fmt.Errorf("source %s not found", src.Spec.Type)
 	}
 
-	activeSource := &ActiveSource{
-		Source:   newSource(),
-		manifest: src,
-		cache:    cache.NewStore(),
+	var opSrc source.Source
+	if src.Spec.PluginSource != nil {
+		var err error
+		opSrc, err = m.pluginManager.LoadPluginSource(
+			m.shutdownCtx,
+			src.Spec.PluginSource,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to load plugin: %w", err)
+		}
+	} else {
+		opSrc = newSource()
 	}
 
-	err := activeSource.Source.Initialize(m.shutdownCtx, src.Spec.Config)
+	err := opSrc.Initialize(m.shutdownCtx, src.Spec.Config)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to initialize source operator: %w", err)
+	}
+
+	activeSource := &ActiveSource{
+		Source:   opSrc,
+		manifest: src,
+		cache:    cache.NewStore(),
 	}
 
 	m.activeSources.Store(src.Name, activeSource)
@@ -191,7 +205,7 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 	var op operator.Operator
 	if target.Spec.PluginSource != nil {
 		var err error
-		op, err = m.pluginManager.LoadPlugin(
+		op, err = m.pluginManager.LoadPluginOperator(
 			m.shutdownCtx,
 			target.Spec.PluginSource,
 		)

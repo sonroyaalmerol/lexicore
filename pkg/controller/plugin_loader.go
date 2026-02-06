@@ -1,4 +1,4 @@
-package operator
+package controller
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
+	"codeberg.org/lexicore/lexicore/pkg/operator"
+	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -24,10 +26,10 @@ func NewPluginManager(cacheDir string) *PluginManager {
 	}
 }
 
-func (pm *PluginManager) LoadPlugin(
+func (pm *PluginManager) LoadPluginOperator(
 	ctx context.Context,
 	source *manifest.PluginSource,
-) (*PluginOperator, error) {
+) (*operator.PluginOperator, error) {
 	var scriptPath string
 	var err error
 
@@ -51,9 +53,44 @@ func (pm *PluginManager) LoadPlugin(
 		return nil, fmt.Errorf("unsupported plugin source type: %s", source.Type)
 	}
 
-	op, err := NewPluginOperator(scriptPath)
+	op, err := operator.NewPluginOperator(scriptPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load plugin operator: %w", err)
+	}
+
+	return op, nil
+}
+
+func (pm *PluginManager) LoadPluginSource(
+	ctx context.Context,
+	manifest *manifest.PluginSource,
+) (*source.PluginSource, error) {
+	var scriptPath string
+	var err error
+
+	switch manifest.Type {
+	case "file":
+		if manifest.File == nil {
+			return nil, fmt.Errorf("file source config is required")
+		}
+		scriptPath = manifest.File.Path
+
+	case "git":
+		if manifest.Git == nil {
+			return nil, fmt.Errorf("git source config is required")
+		}
+		scriptPath, _, err = pm.fetchFromGit(ctx, manifest.Git)
+		if err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported plugin source type: %s", manifest.Type)
+	}
+
+	op, err := source.NewPluginSource(scriptPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load plugin source: %w", err)
 	}
 
 	return op, nil

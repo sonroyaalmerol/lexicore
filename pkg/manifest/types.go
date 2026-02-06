@@ -8,6 +8,11 @@ type IdentitySourceSpec struct {
 	Type       string         `json:"type"` // ldap, okta, etc.
 	Config     map[string]any `json:"config"`
 	SyncPeriod string         `json:"syncPeriod"`
+
+	// Plugin source for Starlark-based operators
+	// When specified, the operator field should be set to "starlark"
+	// +optional
+	PluginSource *PluginSource `json:"pluginSource,omitempty"`
 }
 
 type IdentitySource struct {
