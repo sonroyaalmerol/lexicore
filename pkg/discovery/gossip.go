@@ -22,8 +22,8 @@ type GossipDiscovery struct {
 }
 
 func NewGossipDiscovery(bindAddr string, seedAddrs []string, logger *zap.Logger) (*GossipDiscovery, error) {
-	nodeName := getEnvOrDefault("NODE_NAME", getHostname())
-	nodeIP := getEnvOrDefault("NODE_IP", bindAddr)
+	nodeName := getHostname()
+	nodeIP := bindAddr
 
 	if logger == nil {
 		logger = zap.NewNop()

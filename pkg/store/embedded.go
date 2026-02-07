@@ -33,7 +33,7 @@ func StartEmbeddedHA(c config.EtcdConfig, logger *zap.Logger) *embed.Etcd {
 		case "gossip":
 			disco, err = discovery.NewGossipDiscovery(c.BindAddr, c.SeedAddrs, logger)
 		case "auto":
-			disco, err = discovery.Auto(logger)
+			disco, err = discovery.Auto(c.BindAddr, c.SeedAddrs, logger)
 		default:
 			logger.Fatal("Invalid discovery mode",
 				zap.String("mode", c.Discovery))

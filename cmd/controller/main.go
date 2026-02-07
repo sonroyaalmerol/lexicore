@@ -18,13 +18,6 @@ import (
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
-	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/ad"
-	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/dovecot"
-	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/iredadmin"
-	_ "codeberg.org/lexicore/lexicore/pkg/operator/drivers/ldap"
-	_ "codeberg.org/lexicore/lexicore/pkg/source/authentik"
-	_ "codeberg.org/lexicore/lexicore/pkg/source/ldap"
 )
 
 func main() {
