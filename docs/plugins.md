@@ -1,11 +1,11 @@
 # Plugins (Starlark)
 
-Lexicore supports custom integration logic using **Starlark** (Python-like, embedded). Plugins can act as:
+Lexicore supports custom integration logic using the [Starlark](https://bazel.build/rules/language) language (Python-like, embedded). Plugins can act as:
 
 - **Sources**: fetch identities/groups from some system
 - **Operators**: apply changes downstream
 
-Both are wired the same way at the manifest level: set the type/operator to `starlark` and point `spec.pluginSource` at a script (file or git).
+Both are wired the same way at the manifest level: set the type/operator to `plugin` and point `spec.pluginSource` at a script (file or git).
 
 ---
 
@@ -24,7 +24,7 @@ You’ll see both in the full examples below.
 
 When you want a plugin source, set:
 
-- `spec.type: starlark`
+- `spec.type: plugin`
 - `spec.pluginSource: ...`
 
 ```yaml
@@ -33,7 +33,7 @@ kind: IdentitySource
 metadata:
   name: hr-system
 spec:
-  type: starlark
+  type: plugin
   syncPeriod: 5m
   config:
     api_url: "https://hr.example.com"
@@ -67,7 +67,7 @@ Return shapes are strict-ish: `get_identities` and `get_groups` should return di
 
 When you want a plugin operator, set:
 
-- `spec.operator: starlark`
+- `spec.operator: plugin`
 - `spec.pluginSource: ...`
 
 ```yaml
@@ -77,7 +77,7 @@ metadata:
   name: mail-provisioning
 spec:
   sourceRef: corporate-ldap
-  operator: starlark
+  operator: plugin
   dryRun: false
 
   transformers:

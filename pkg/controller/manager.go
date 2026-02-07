@@ -158,9 +158,14 @@ func (m *Manager) RegisterOperator(name string, op func() operator.Operator) {
 }
 
 func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
-	newSource, ok := m.sourceFactory.Load(src.Spec.Type)
-	if !ok {
-		return fmt.Errorf("source %s not found", src.Spec.Type)
+	var newSource func() source.Source
+
+	if src.Spec.Type != "plugin" {
+		var ok bool
+		newSource, ok = m.sourceFactory.Load(src.Spec.Type)
+		if !ok {
+			return fmt.Errorf("source %s not found", src.Spec.Type)
+		}
 	}
 
 	var opSrc source.Source
@@ -174,6 +179,9 @@ func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
 			return fmt.Errorf("failed to load plugin: %w", err)
 		}
 	} else {
+		if newSource == nil {
+			return fmt.Errorf("source %s not found", src.Spec.Type)
+		}
 		opSrc = newSource()
 	}
 
@@ -197,9 +205,14 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 		return fmt.Errorf("source %s not found", target.Spec.SourceRef)
 	}
 
-	newTarget, ok := m.operatorFactory.Load(target.Spec.Operator)
-	if !ok && target.Spec.PluginSource == nil {
-		return fmt.Errorf("operator %s not found", target.Spec.Operator)
+	var newTarget func() operator.Operator
+
+	if target.Spec.Operator != "plugin" {
+		var ok bool
+		newTarget, ok = m.operatorFactory.Load(target.Spec.Operator)
+		if !ok && target.Spec.PluginSource == nil {
+			return fmt.Errorf("operator %s not found", target.Spec.Operator)
+		}
 	}
 
 	var op operator.Operator
@@ -213,6 +226,9 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 			return fmt.Errorf("failed to load plugin: %w", err)
 		}
 	} else {
+		if newTarget == nil {
+			return fmt.Errorf("operator %s not found", target.Spec.Operator)
+		}
 		op = newTarget()
 	}
 

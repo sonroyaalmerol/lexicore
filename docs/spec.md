@@ -14,24 +14,24 @@ kind: IdentitySource
 metadata:
   name: example
 spec:
-  type: ldap|okta|starlark|...
+  type: ldap|authentik|plugin|...
   config: {}          # provider-specific blob
   syncPeriod: 5m      # string duration
-  pluginSource: {}    # optional (only for type: starlark)
+  pluginSource: {}    # optional (only for type: plugin)
 ```
 
 ### Fields
 
 - `spec.type` (string)
-  - Source driver type (`ldap`, `okta`, `starlark`, etc.)
+  - Source driver type (`ldap`, `authentik`, `plugin`, etc.)
 - `spec.config` (map)
   - Driver-specific config passed into the source implementation
 - `spec.syncPeriod` (string)
   - How often this source should refresh (duration string)
 - `spec.pluginSource` (object, optional)
-  - Where to fetch the Starlark script (only meaningful for `type: starlark`)
+  - Where to fetch the plugin script (only meaningful for `type: plugin`)
 
-### Example (starlark + git)
+### Example (plugin + git)
 
 ```yaml
 apiVersion: lexicore.io/v1
@@ -39,7 +39,7 @@ kind: IdentitySource
 metadata:
   name: hr-system
 spec:
-  type: starlark
+  type: plugin
   syncPeriod: 10m
   config:
     api_url: "https://hr.example.com"
@@ -67,11 +67,11 @@ metadata:
   name: example
 spec:
   sourceRef: some-identity-source
-  operator: dovecot|unix|starlark|...
+  operator: dovecot-acl|iredmail|plugin|...
   transformers: []
   config: {}
   dryRun: false
-  pluginSource: {} # optional (only for operator: starlark)
+  pluginSource: {} # optional (only for operator: plugin)
 status: {}         # controller-populated
 ```
 
@@ -80,7 +80,7 @@ status: {}         # controller-populated
 - `spec.sourceRef` (string)
   - Name of the `IdentitySource` this target consumes
 - `spec.operator` (string)
-  - Operator driver (`dovecot`, `unix`, `starlark`, etc.)
+  - Operator driver (`dovecot-acl`, `iredmail`, `plugin`, etc.)
 - `spec.transformers` (array)
   - Transformation pipeline, evaluated in order
 - `spec.config` (map)
@@ -88,9 +88,9 @@ status: {}         # controller-populated
 - `spec.dryRun` (bool)
   - If true, reconciliation should compute actions but not apply them
 - `spec.pluginSource` (object, optional)
-  - Where to fetch the Starlark operator plugin (only meaningful for `operator: starlark`)
+  - Where to fetch the operator plugin (only meaningful for `operator: plugin`)
 
-### Example (starlark + file)
+### Example (plugin + file)
 
 ```yaml
 apiVersion: lexicore.io/v1
@@ -99,7 +99,7 @@ metadata:
   name: mail-provisioning
 spec:
   sourceRef: corporate-ldap
-  operator: starlark
+  operator: plugin
   dryRun: true
   transformers:
     - name: engineering-only
