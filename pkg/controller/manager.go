@@ -67,7 +67,7 @@ func NewManager(ctx context.Context, cfg *config.Config, db *store.EtcdStore, lo
 		operatorFactory: xsync.NewMap[string, func() operator.Operator](),
 		activeOperators: xsync.NewMap[string, *ActiveOperator](),
 		activeSources:   xsync.NewMap[string, *ActiveSource](),
-		pluginManager:   NewPluginManager("/var/lib/lexicore/plugins"),
+		pluginManager:   newPluginManager(cfg.Server.PluginsDir),
 		queue:           make(chan reconcileTask, cfg.Workers.QueueSize),
 		cfg:             cfg,
 		logger:          logger,
@@ -166,7 +166,7 @@ func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
 	var opSrc source.Source
 	if src.Spec.PluginSource != nil {
 		var err error
-		opSrc, err = m.pluginManager.LoadPluginSource(
+		opSrc, err = m.pluginManager.loadPluginSource(
 			m.shutdownCtx,
 			src.Spec.PluginSource,
 		)
@@ -205,7 +205,7 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 	var op operator.Operator
 	if target.Spec.PluginSource != nil {
 		var err error
-		op, err = m.pluginManager.LoadPluginOperator(
+		op, err = m.pluginManager.loadPluginOperator(
 			m.shutdownCtx,
 			target.Spec.PluginSource,
 		)
@@ -284,7 +284,7 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 				return
 			}
 
-			if err := m.Reconcile(task.targetName); err != nil {
+			if err := m.reconcile(task.targetName); err != nil {
 				logger.Error("Reconciliation failed",
 					zap.String("target", task.targetName),
 					zap.Error(err))

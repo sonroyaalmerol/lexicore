@@ -20,13 +20,13 @@ type PluginManager struct {
 	cacheDir string
 }
 
-func NewPluginManager(cacheDir string) *PluginManager {
+func newPluginManager(cacheDir string) *PluginManager {
 	return &PluginManager{
 		cacheDir: cacheDir,
 	}
 }
 
-func (pm *PluginManager) LoadPluginOperator(
+func (pm *PluginManager) loadPluginOperator(
 	ctx context.Context,
 	source *manifest.PluginSource,
 ) (*operator.PluginOperator, error) {
@@ -61,7 +61,7 @@ func (pm *PluginManager) LoadPluginOperator(
 	return op, nil
 }
 
-func (pm *PluginManager) LoadPluginSource(
+func (pm *PluginManager) loadPluginSource(
 	ctx context.Context,
 	manifest *manifest.PluginSource,
 ) (*source.PluginSource, error) {

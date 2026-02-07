@@ -21,6 +21,7 @@ type ServerConfig struct {
 	Address     string `yaml:"address" json:"address" envconfig:"ADDRESS"`
 	HealthCheck bool   `yaml:"healthCheck" json:"healthCheck" envconfig:"HEALTH_CHECK"`
 	Metrics     bool   `yaml:"metrics" json:"metrics" envconfig:"METRICS"`
+	PluginsDir  string `yaml:"pluginsDir" json:"pluginsDir" envconfig:"PLUGINS_DIR"`
 }
 
 type LoggingConfig struct {
@@ -63,6 +64,7 @@ func DefaultConfig() *Config {
 			Address:     ":8080",
 			HealthCheck: true,
 			Metrics:     true,
+			PluginsDir:  "/var/lib/lexicore/plugins",
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

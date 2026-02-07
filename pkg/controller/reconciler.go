@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func (m *Manager) Reconcile(targetName string) error {
+func (m *Manager) reconcile(targetName string) error {
 	target, ok := m.activeOperators.Load(targetName)
 	if !ok {
 		return fmt.Errorf("failed to load operator for %s", targetName)
