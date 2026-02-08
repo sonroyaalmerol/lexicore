@@ -3,6 +3,7 @@ package ldap
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,6 +21,10 @@ type config struct {
 	UserAttributes  []string
 	GroupAttributes []string
 	TLSConfig       *tlsConfig
+
+	EnableChangeDetection bool
+	ModifyTimestampAttr   string // e.g., "modifyTimestamp"
+	CreateTimestampAttr   string // e.g., "createTimestamp"
 }
 
 type tlsConfig struct {
@@ -37,6 +42,9 @@ type LDAPSource struct {
 	config *config
 	mapper *mapper
 	conn   *ldap.Conn
+
+	supportsChangeDetection bool
+	lastSyncTime            time.Time
 }
 
 func (l *LDAPSource) Initialize(ctx context.Context, config map[string]any) error {
@@ -54,6 +62,16 @@ func (l *LDAPSource) Validate(ctx context.Context) error {
 	l.mu.Lock()
 	l.config = cfg
 	l.mapper = newMapper(mCfg)
+
+	if cfg.EnableChangeDetection {
+		if cfg.ModifyTimestampAttr == "" {
+			cfg.ModifyTimestampAttr = "modifyTimestamp"
+		}
+		if cfg.CreateTimestampAttr == "" {
+			cfg.CreateTimestampAttr = "createTimestamp"
+		}
+		l.supportsChangeDetection = true
+	}
 	l.mu.Unlock()
 
 	return nil
@@ -70,11 +88,13 @@ func (l *LDAPSource) Connect(ctx context.Context) error {
 
 	if l.config.TLSConfig != nil && l.config.TLSConfig.Enabled {
 		if err := conn.StartTLS(nil); err != nil {
+			conn.Close()
 			return fmt.Errorf("failed to start TLS: %w", err)
 		}
 	}
 
 	if err := conn.Bind(l.config.BindDN, l.config.BindPassword); err != nil {
+		conn.Close()
 		return fmt.Errorf("failed to bind: %w", err)
 	}
 
@@ -85,7 +105,12 @@ func (l *LDAPSource) Connect(ctx context.Context) error {
 func (l *LDAPSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
 	l.mu.Lock()
 	config := l.config
+	conn := l.conn
 	l.mu.Unlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("connection not established")
+	}
 
 	searchRequest := ldap.NewSearchRequest(
 		config.BaseDN,
@@ -97,22 +122,30 @@ func (l *LDAPSource) GetIdentities(ctx context.Context) (map[string]source.Ident
 		nil,
 	)
 
-	sr, err := l.conn.Search(searchRequest)
+	sr, err := conn.Search(searchRequest)
 	if err != nil {
 		return nil, fmt.Errorf("LDAP search failed: %w", err)
 	}
 
-	identities := make(map[string]source.Identity)
+	identities := make(map[string]source.Identity, len(sr.Entries))
 	for _, entry := range sr.Entries {
-		identities[entry.DN] = l.mapper.mapIdentity(entry)
+		identity := l.mapper.mapIdentity(entry)
+		key := l.identityKey(identity)
+		identities[key] = identity
 	}
+
 	return identities, nil
 }
 
 func (l *LDAPSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
 	l.mu.Lock()
 	config := l.config
+	conn := l.conn
 	l.mu.Unlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("connection not established")
+	}
 
 	searchRequest := ldap.NewSearchRequest(
 		config.BaseDN,
@@ -124,149 +157,179 @@ func (l *LDAPSource) GetGroups(ctx context.Context) (map[string]source.Group, er
 		nil,
 	)
 
-	sr, err := l.conn.Search(searchRequest)
+	sr, err := conn.Search(searchRequest)
 	if err != nil {
 		return nil, fmt.Errorf("LDAP group search failed: %w", err)
 	}
 
-	groups := make(map[string]source.Group)
+	groups := make(map[string]source.Group, len(sr.Entries))
 	for _, entry := range sr.Entries {
-		groups[entry.DN] = l.mapper.mapGroup(entry)
+		group := l.mapper.mapGroup(entry)
+		key := l.groupKey(group)
+		groups[key] = group
 	}
+
 	return groups, nil
 }
 
-func (l *LDAPSource) Watch(ctx context.Context) (<-chan source.Event, error) {
+func (l *LDAPSource) Close() error {
 	l.mu.Lock()
-	config := l.config
+	conn := l.conn
+	l.conn = nil
 	l.mu.Unlock()
 
-	events := make(chan source.Event)
-	combinedFilter := fmt.Sprintf("(|%s%s)", config.UserSelector, config.GroupSelector)
-	allAttributes := append(config.UserAttributes, config.GroupAttributes...)
-
-	go func() {
-		defer close(events)
-
-		// Attempt RFC 4533 (SyncRepl)
-		syncControl := ldap.NewControlSyncRequest(ldap.SyncRequestModeRefreshAndPersist, nil, true)
-		searchRequest := ldap.NewSearchRequest(
-			config.BaseDN,
-			ldap.ScopeWholeSubtree,
-			ldap.NeverDerefAliases,
-			0, 0, false,
-			combinedFilter,
-			allAttributes,
-			[]ldap.Control{syncControl},
-		)
-		sr, err := l.conn.Search(searchRequest)
-
-		if err != nil && ldap.IsErrorWithCode(err, ldap.LDAPResultUnavailableCriticalExtension) {
-			l.runPollingWatch(ctx, events, combinedFilter, allAttributes)
-			return
-		}
-
-		if err == nil {
-			for _, entry := range sr.Entries {
-				l.sendEvent(ctx, events, entry)
-			}
-		}
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				if err != nil {
-					time.Sleep(10 * time.Second)
-					_ = l.Connect(ctx)
-				}
-				sr, err = l.conn.Search(searchRequest)
-				if err == nil {
-					for _, entry := range sr.Entries {
-						l.sendEvent(ctx, events, entry)
-					}
-				}
-			}
-		}
-	}()
-
-	return events, nil
+	if conn != nil {
+		return conn.Close()
+	}
+	return nil
 }
 
-func (l *LDAPSource) runPollingWatch(ctx context.Context, events chan<- source.Event, filter string, attrs []string) {
+func (l *LDAPSource) SupportsChangeDetection() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.supportsChangeDetection
+}
+
+func (l *LDAPSource) GetChangesSince(
+	ctx context.Context,
+	since time.Time,
+) (*source.Changes, time.Time, error) {
 	l.mu.Lock()
 	config := l.config
+	conn := l.conn
 	l.mu.Unlock()
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+	if conn == nil {
+		return nil, time.Time{}, fmt.Errorf("connection not established")
+	}
 
-	searchRequest := ldap.NewSearchRequest(
+	if !l.supportsChangeDetection {
+		return nil, time.Time{}, fmt.Errorf("change detection not enabled")
+	}
+
+	currentTime := time.Now()
+	changes := &source.Changes{
+		ModifiedIdentities: make([]source.Identity, 0),
+		DeletedIdentities:  make([]string, 0),
+		ModifiedGroups:     make([]source.Group, 0),
+		DeletedGroups:      make([]string, 0),
+		FullSync:           false,
+	}
+
+	if since.IsZero() {
+		changes.FullSync = true
+		return changes, currentTime, nil
+	}
+
+	// LDAP uses format: YYYYMMDDHHMMSSz
+	sinceStr := since.UTC().Format("20060102150405.0Z")
+
+	userFilter := fmt.Sprintf(
+		"(&%s(|(%s>=%s)(%s>=%s)))",
+		config.UserSelector,
+		config.ModifyTimestampAttr,
+		sinceStr,
+		config.CreateTimestampAttr,
+		sinceStr,
+	)
+
+	userAttrs := append([]string{}, config.UserAttributes...)
+	userAttrs = appendIfMissing(userAttrs, config.ModifyTimestampAttr)
+	userAttrs = appendIfMissing(userAttrs, config.CreateTimestampAttr)
+
+	userSearchRequest := ldap.NewSearchRequest(
 		config.BaseDN,
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
 		0, 0, false,
-		filter,
-		attrs,
+		userFilter,
+		userAttrs,
 		nil,
 	)
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			sr, err := l.conn.Search(searchRequest)
-			if err != nil {
-				_ = l.Connect(ctx)
-				continue
-			}
-
-			for _, entry := range sr.Entries {
-				l.sendEvent(ctx, events, entry)
-			}
-		}
+	userResults, err := conn.Search(userSearchRequest)
+	if err != nil {
+		// If the filter fails, fall back to full sync
+		changes.FullSync = true
+		return changes, currentTime, nil
 	}
-}
 
-func (l *LDAPSource) sendEvent(ctx context.Context, events chan<- source.Event, entry *ldap.Entry) {
-	event := l.processSyncEntry(entry)
-	select {
-	case events <- event:
-	case <-ctx.Done():
+	for _, entry := range userResults.Entries {
+		identity := l.mapper.mapIdentity(entry)
+		changes.ModifiedIdentities = append(changes.ModifiedIdentities, identity)
 	}
-}
 
-func (l *LDAPSource) processSyncEntry(entry *ldap.Entry) source.Event {
+	// Search for modified/created groups
+	groupFilter := fmt.Sprintf(
+		"(&%s(|(%s>=%s)(%s>=%s)))",
+		config.GroupSelector,
+		config.ModifyTimestampAttr,
+		sinceStr,
+		config.CreateTimestampAttr,
+		sinceStr,
+	)
+
+	groupAttrs := append([]string{}, config.GroupAttributes...)
+	groupAttrs = appendIfMissing(groupAttrs, config.ModifyTimestampAttr)
+	groupAttrs = appendIfMissing(groupAttrs, config.CreateTimestampAttr)
+
+	groupSearchRequest := ldap.NewSearchRequest(
+		config.BaseDN,
+		ldap.ScopeWholeSubtree,
+		ldap.NeverDerefAliases,
+		0, 0, false,
+		groupFilter,
+		groupAttrs,
+		nil,
+	)
+
+	groupResults, err := conn.Search(groupSearchRequest)
+	if err != nil {
+		// If the filter fails, fall back to full sync
+		changes.FullSync = true
+		return changes, currentTime, nil
+	}
+
+	for _, entry := range groupResults.Entries {
+		group := l.mapper.mapGroup(entry)
+		changes.ModifiedGroups = append(changes.ModifiedGroups, group)
+	}
+
+	// Note: LDAP doesn't provide easy deletion detection without tombstone support
+	// or persistent search. For basic change detection, we only track modifications.
+	// Deletions will be detected by the cache diff when doing periodic full syncs.
+	// - Persistent Search (RFC 3673)
+	// - Content Sync Operation (RFC 4533)
+	// - Tombstone tracking if available
+
 	l.mu.Lock()
-	mapper := l.mapper
+	l.lastSyncTime = currentTime
 	l.mu.Unlock()
 
-	isGroup := entry.GetAttributeValue(mapper.config.GIDAttribute) != ""
-
-	now := time.Now().Unix()
-
-	if isGroup {
-		g := mapper.mapGroup(entry)
-		return source.Event{
-			Type:      source.EventUpdate,
-			Group:     &g,
-			Timestamp: now,
-		}
-	}
-
-	i := mapper.mapIdentity(entry)
-	return source.Event{
-		Type:      source.EventUpdate,
-		Identity:  &i,
-		Timestamp: now,
-	}
+	return changes, currentTime, nil
 }
 
-func (l *LDAPSource) Close() error {
-	if l.conn != nil {
-		return l.conn.Close()
+func (l *LDAPSource) identityKey(identity source.Identity) string {
+	if identity.UID != "" {
+		return identity.UID
 	}
-	return nil
+	if identity.Username != "" {
+		return identity.Username
+	}
+	return identity.Email
+}
+
+func (l *LDAPSource) groupKey(group source.Group) string {
+	if group.GID != "" {
+		return group.GID
+	}
+	return group.Name
+}
+
+func appendIfMissing(slice []string, item string) []string {
+	if slices.Contains(slice, item) {
+		return slice
+	}
+
+	return append(slice, item)
 }

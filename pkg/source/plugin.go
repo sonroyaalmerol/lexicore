@@ -198,35 +198,6 @@ func (s *PluginSource) GetGroups(ctx context.Context) (map[string]Group, error) 
 	return groups, nil
 }
 
-func (s *PluginSource) Watch(ctx context.Context) (<-chan Event, error) {
-	// Watch is optional - check if the plugin implements it
-	watchFunc, ok := s.globals["watch"]
-	if !ok {
-		return nil, fmt.Errorf("watch not implemented by this plugin")
-	}
-
-	_, ok = watchFunc.(starlark.Callable)
-	if !ok {
-		return nil, fmt.Errorf("watch is not callable")
-	}
-
-	// Note: Implementing watch would require a more complex mechanism
-	// to handle async events from Starlark. This is a placeholder.
-	return nil, fmt.Errorf("watch not yet supported for plugin sources")
-}
-
-func (s *PluginSource) Close() error {
-	if closeFunc, ok := s.globals["close"]; ok {
-		if callable, ok := closeFunc.(starlark.Callable); ok {
-			_, err := starlark.Call(s.thread, callable, nil, nil)
-			if err != nil {
-				return fmt.Errorf("close failed: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
 // Helper functions
 
 func goMapToStarlarkDict(m map[string]any) *starlark.Dict {

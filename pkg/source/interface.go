@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"time"
 )
 
 type SourceData struct {
@@ -27,6 +28,24 @@ type Group struct {
 	Description string
 }
 
+type Changes struct {
+	ModifiedIdentities []Identity
+	DeletedIdentities  []string // UIDs
+	ModifiedGroups     []Group
+	DeletedGroups      []string // GIDs
+	FullSync           bool     // If true, this is a full snapshot
+}
+
+type ChangeDetector interface {
+	// SupportsChangeDetection returns true if the source can efficiently
+	// detect changes since a given timestamp
+	SupportsChangeDetection() bool
+
+	// GetChangesSince returns only items modified after the given time
+	// Returns the changes and the current server timestamp
+	GetChangesSince(ctx context.Context, since time.Time) (*Changes, time.Time, error)
+}
+
 type Source interface {
 	Name() string
 	Initialize(ctx context.Context, config map[string]any) error
@@ -40,9 +59,6 @@ type Source interface {
 
 	// GetGroups fetches all groups
 	GetGroups(ctx context.Context) (map[string]Group, error)
-
-	// Watch returns a channel for change notifications (optional)
-	Watch(ctx context.Context) (<-chan Event, error)
 
 	// Close closes the connection
 	Close() error

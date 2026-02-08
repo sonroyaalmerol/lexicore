@@ -31,8 +31,9 @@ type reconcileTask struct {
 
 type ActiveOperator struct {
 	operator.Operator
-	manifest *manifest.SyncTarget
-	cache    *cache.Store
+	manifest       *manifest.SyncTarget
+	cache          *cache.Store
+	lastReconciled time.Time
 }
 
 type ActiveSource struct {
@@ -59,7 +60,12 @@ type Manager struct {
 	shutdown    context.CancelFunc
 }
 
-func NewManager(ctx context.Context, cfg *config.Config, db *store.EtcdStore, logger *zap.Logger) *Manager {
+func NewManager(
+	ctx context.Context,
+	cfg *config.Config,
+	db *store.EtcdStore,
+	logger *zap.Logger,
+) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
 	m := &Manager{
 		db:              db,
@@ -237,38 +243,40 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 	}
 
 	activeTarget := &ActiveOperator{
-		Operator: op,
-		manifest: target,
-		cache:    cache.NewStore(),
+		Operator:       op,
+		manifest:       target,
+		cache:          cache.NewStore(),
+		lastReconciled: time.Time{}, // Zero value = never reconciled
 	}
 
-	_, existed := m.activeOperators.LoadAndStore(target.Name, activeTarget)
-	if !existed {
-		// Start ticker for this target if manager is already running
-		select {
-		case <-m.shutdownCtx.Done():
-			// Manager is shut down, don't start ticker
-		default:
-			m.startTargetTicker(target.Name)
-		}
+	m.activeOperators.Store(target.Name, activeTarget)
+
+	select {
+	case m.queue <- reconcileTask{targetName: target.Name, immediate: true}:
+	case <-m.shutdownCtx.Done():
+	default:
+		m.logger.Warn(
+			"Queue full, new target will be reconciled on next tick",
+			zap.String("target", target.Name),
+		)
 	}
 
 	return nil
 }
 
 func (m *Manager) Start(ctx context.Context) error {
-	m.logger.Info("Starting controller manager",
-		zap.Int("workers", m.cfg.Workers.ReconcileWorkers))
+	m.logger.Info(
+		"Starting controller manager",
+		zap.Int("workers", m.cfg.Workers.ReconcileWorkers),
+	)
 
 	for i := 0; i < m.cfg.Workers.ReconcileWorkers; i++ {
 		m.wg.Add(1)
 		go m.worker(ctx, i)
 	}
 
-	m.activeOperators.Range(func(name string, _ *ActiveOperator) bool {
-		m.startTargetTicker(name)
-		return true
-	})
+	m.wg.Add(1)
+	go m.globalTicker(ctx)
 
 	<-ctx.Done()
 
@@ -281,6 +289,60 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	m.logger.Info("Controller manager stopped")
 	return nil
+}
+
+func (m *Manager) globalTicker(ctx context.Context) {
+	defer m.wg.Done()
+
+	ticker := time.NewTicker(m.cfg.DefaultSyncPeriod)
+	defer ticker.Stop()
+
+	m.logger.Info(
+		"Global ticker started",
+		zap.Duration("interval", m.cfg.DefaultSyncPeriod),
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Info("Global ticker stopped")
+			return
+		case <-ticker.C:
+			m.scheduleReconciliations()
+		}
+	}
+}
+
+func (m *Manager) scheduleReconciliations() {
+	now := time.Now()
+	scheduled := 0
+	skipped := 0
+
+	m.activeOperators.Range(func(name string, target *ActiveOperator) bool {
+		if now.Sub(target.lastReconciled) >= m.cfg.DefaultSyncPeriod {
+			select {
+			case m.queue <- reconcileTask{targetName: name, immediate: false}:
+				scheduled++
+			case <-m.shutdownCtx.Done():
+				return false
+			default:
+				skipped++
+				m.logger.Warn(
+					"Queue full, skipping reconciliation",
+					zap.String("target", name),
+				)
+			}
+		}
+		return true
+	})
+
+	if scheduled > 0 || skipped > 0 {
+		m.logger.Debug(
+			"Scheduled reconciliations",
+			zap.Int("scheduled", scheduled),
+			zap.Int("skipped", skipped),
+		)
+	}
 }
 
 func (m *Manager) worker(ctx context.Context, workerID int) {
@@ -301,53 +363,23 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 			}
 
 			if err := m.reconcile(task.targetName); err != nil {
-				logger.Error("Reconciliation failed",
+				logger.Error(
+					"Reconciliation failed",
 					zap.String("target", task.targetName),
-					zap.Error(err))
+					zap.Error(err),
+				)
 			} else {
-				logger.Debug("Reconciliation completed",
-					zap.String("target", task.targetName))
+				logger.Debug(
+					"Reconciliation completed",
+					zap.String("target", task.targetName),
+				)
+
+				if target, ok := m.activeOperators.Load(task.targetName); ok {
+					target.lastReconciled = time.Now()
+				}
 			}
 		}
 	}
-}
-
-func (m *Manager) startTargetTicker(targetName string) {
-	m.wg.Go(func() {
-		ticker := time.NewTicker(m.cfg.DefaultSyncPeriod)
-		defer ticker.Stop()
-
-		logger := m.logger.With(zap.String("target", targetName))
-		logger.Debug("Ticker started")
-
-		select {
-		case m.queue <- reconcileTask{targetName: targetName, immediate: true}:
-		case <-m.shutdownCtx.Done():
-			return
-		}
-
-		for {
-			select {
-			case <-m.shutdownCtx.Done():
-				logger.Debug("Ticker stopped")
-				return
-			case <-ticker.C:
-				// Check if target still exists before queuing
-				if _, ok := m.activeOperators.Load(targetName); !ok {
-					logger.Debug("Target removed, stopping ticker")
-					return
-				}
-
-				select {
-				case m.queue <- reconcileTask{targetName: targetName, immediate: false}:
-				case <-m.shutdownCtx.Done():
-					return
-				default:
-					logger.Warn("Queue full, skipping reconciliation")
-				}
-			}
-		}
-	})
 }
 
 func (m *Manager) GetIdentitySource(name string) (source.Source, bool) {
@@ -360,7 +392,10 @@ func (m *Manager) RemoveIdentitySource(name string) {
 
 func (m *Manager) RemoveSyncTarget(name string) {
 	m.activeOperators.Delete(name)
-	m.logger.Info("Removed SyncTarget from active reconciliation", zap.String("name", name))
+	m.logger.Info(
+		"Removed SyncTarget from active reconciliation",
+		zap.String("name", name),
+	)
 }
 
 func (m *Manager) TriggerReconciliation(targetName string) error {
