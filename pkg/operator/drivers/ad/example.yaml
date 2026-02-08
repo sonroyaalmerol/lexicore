@@ -6,6 +6,7 @@ spec:
   sourceRef: authentik-prod
   operator: active-directory
   config:
+    attributePrefix: "ad:"
     url: "ldaps://dc01.example.com:636"
     bindDN: "cn=LexicoreService,ou=ServiceAccounts,dc=example,dc=com"
     bindPassword: "${AD_SERVICE_PASS}"

@@ -6,6 +6,7 @@ spec:
   sourceRef: corporate-ldap
   operator: dovecot-acl
   config:
+    attributePrefix: "dovecot_"
     url: "http://dovecot-server:8080/doveadm/v1"
     api_key: "${DOVECOT_API_KEY}"
   transformers:
