@@ -3,17 +3,21 @@ package source
 import (
 	"fmt"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 type BaseSource struct {
 	name   string
 	config map[string]any
 	mu     sync.RWMutex
+	logger *zap.Logger
 }
 
-func NewBaseSource(name string) *BaseSource {
+func NewBaseSource(name string, logger *zap.Logger) *BaseSource {
 	return &BaseSource{
-		name: name,
+		name:   name,
+		logger: logger,
 	}
 }
 
@@ -50,4 +54,22 @@ func (b *BaseSource) SetConfig(config map[string]any) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.config = config
+}
+
+func (b *BaseSource) LogInfo(s string, v ...any) {
+	if b.logger != nil {
+		b.logger.Info(fmt.Sprintf(s, v...), zap.String("source", b.name))
+	}
+}
+
+func (b *BaseSource) LogWarn(s string, v ...any) {
+	if b.logger != nil {
+		b.logger.Warn(fmt.Sprintf(s, v...), zap.String("source", b.name))
+	}
+}
+
+func (b *BaseSource) LogError(err error) {
+	if err != nil && b.logger != nil {
+		b.logger.Error(err.Error(), zap.String("source", b.name))
+	}
 }

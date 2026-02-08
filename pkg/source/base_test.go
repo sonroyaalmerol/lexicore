@@ -7,12 +7,12 @@ import (
 )
 
 func TestBaseSource_Name(t *testing.T) {
-	op := NewBaseSource("test-source")
+	op := NewBaseSource("test-source", nil)
 	assert.Equal(t, "test-source", op.Name())
 }
 
 func TestBaseSource_Config(t *testing.T) {
-	op := NewBaseSource("test")
+	op := NewBaseSource("test", nil)
 
 	config := map[string]any{
 		"key1": "value1",

@@ -10,6 +10,39 @@ spec:
     url: "https://test.test.com/iredadmin"
     username: "test@test.com"
     password: ""
+    groupAttributeMappings:
+      # Mail quota: use the highest quota from all groups
+      - sourceAttribute: mailQuota
+        targetAttribute: mailQuota
+        aggregationMode: max
+        defaultValue: 1073741824  # 1GB default
+      
+      # Language: use the first group's language
+      - sourceAttribute: defaultLanguage
+        targetAttribute: preferredLanguage
+        aggregationMode: first
+        defaultValue: en_US
+      
+      # Mail domain: use last group's domain (priority groups)
+      - sourceAttribute: mailDomain
+        targetAttribute: mailDomain
+        aggregationMode: last
+      
+      # Enabled services: aggregate from all groups
+      - sourceAttribute: enabledServices
+        targetAttribute: enabledService
+        aggregationMode: append
+      
+      # Account status: always override with group setting
+      - sourceAttribute: accountStatus
+        targetAttribute: accountStatus
+        aggregationMode: override
+        defaultValue: active
+      
+      # Title: use minimum (for hierarchical titles)
+      - sourceAttribute: title
+        targetAttribute: title
+        aggregationMode: min
   transformers:
     - name: mail-settings
       type: template

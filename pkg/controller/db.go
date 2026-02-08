@@ -154,7 +154,7 @@ func (mgr *Manager) runLeaderElection(nodeName string) {
 				continue
 			}
 
-			election := concurrency.NewElection(session, "/lexicore/leader")
+			election := concurrency.NewElection(session, "/lexicore.io/leader")
 			if err := election.Campaign(mgr.shutdownCtx, nodeName); err != nil {
 				mgr.logger.Debug("Campaign failed, retrying", zap.Error(err))
 				session.Close()

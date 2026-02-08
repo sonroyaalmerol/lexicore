@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -29,6 +30,7 @@ func newPluginManager(cacheDir string) *PluginManager {
 func (pm *PluginManager) loadPluginOperator(
 	ctx context.Context,
 	source *manifest.PluginSource,
+	logger *zap.Logger,
 ) (*operator.PluginOperator, error) {
 	var scriptPath string
 	var err error
@@ -53,7 +55,7 @@ func (pm *PluginManager) loadPluginOperator(
 		return nil, fmt.Errorf("unsupported plugin source type: %s", source.Type)
 	}
 
-	op, err := operator.NewPluginOperator(scriptPath)
+	op, err := operator.NewPluginOperator(scriptPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load plugin operator: %w", err)
 	}
@@ -64,6 +66,7 @@ func (pm *PluginManager) loadPluginOperator(
 func (pm *PluginManager) loadPluginSource(
 	ctx context.Context,
 	manifest *manifest.PluginSource,
+	logger *zap.Logger,
 ) (*source.PluginSource, error) {
 	var scriptPath string
 	var err error
@@ -88,7 +91,7 @@ func (pm *PluginManager) loadPluginSource(
 		return nil, fmt.Errorf("unsupported plugin source type: %s", manifest.Type)
 	}
 
-	op, err := source.NewPluginSource(scriptPath)
+	op, err := source.NewPluginSource(scriptPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load plugin source: %w", err)
 	}

@@ -18,7 +18,11 @@ type ADOperator struct {
 
 func (o *ADOperator) Initialize(ctx context.Context, config map[string]any) error {
 	o.SetConfig(config)
-	return o.Validate(ctx)
+	if err := o.Validate(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (o *ADOperator) Validate(ctx context.Context) error {
@@ -56,16 +60,16 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*oper
 	}
 	defer o.Close()
 
-	res := &operator.SyncResult{
-		Errors: make([]error, 0, len(state.Identities)/10), // Pre-allocate for ~10% error rate
-	}
+	res := &operator.SyncResult{}
 	userBaseDN, _ := o.GetStringConfig("userBaseDN")
 
 	for uid, id := range state.Identities {
-		dn := o.buildDN(id, userBaseDN)
+		enriched := o.EnrichIdentity(id, state.Groups)
+
+		dn := o.buildDN(enriched, userBaseDN)
 
 		if state.DryRun {
-			res.IdentitiesUpdated++
+			res.IdentitiesUpdated.Add(1)
 			continue
 		}
 
@@ -73,29 +77,32 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*oper
 			userBaseDN,
 			ldap.ScopeWholeSubtree,
 			ldap.NeverDerefAliases, 0, 0, false,
-			fmt.Sprintf("(&(objectClass=user)(sAMAccountName=%s))", id.Username),
+			fmt.Sprintf("(&(objectClass=user)(sAMAccountName=%s))", enriched.Username),
 			[]string{"dn", "userAccountControl"},
 			nil,
 		)
 
 		sr, err := o.conn.Search(search)
 		if err != nil {
-			res.Errors = append(res.Errors, fmt.Errorf("search failed for %s (uid: %s): %w", id.Username, uid, err))
+			o.LogError(fmt.Errorf("search failed for %s (uid: %s): %w", enriched.Username, uid, err))
+			res.ErrCount.Add(1)
 			continue
 		}
 
 		if len(sr.Entries) == 0 {
-			if err := o.createUser(dn, &id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("create %s (uid: %s) failed: %w", id.Username, uid, err))
+			if err := o.createUser(dn, &enriched); err != nil {
+				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", enriched.Username, uid, err))
+				res.ErrCount.Add(1)
 			} else {
-				res.IdentitiesCreated++
+				res.IdentitiesCreated.Add(1)
 			}
 		} else {
 			existingDN := sr.Entries[0].DN
-			if err := o.updateUser(existingDN, &id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("update %s (uid: %s) failed: %w", id.Username, uid, err))
+			if err := o.updateUser(existingDN, &enriched); err != nil {
+				o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
+				res.ErrCount.Add(1)
 			} else {
-				res.IdentitiesUpdated++
+				res.IdentitiesUpdated.Add(1)
 			}
 		}
 	}
@@ -130,6 +137,14 @@ func (o *ADOperator) createUser(dn string, id *source.Identity) error {
 	}
 	if id.DisplayName != "" {
 		addReq.Attribute("displayName", []string{id.DisplayName})
+	}
+
+	for k, v := range id.Attributes {
+		attrName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
+		if !hasPrefix {
+			continue
+		}
+		addReq.Attribute(attrName, []string{fmt.Sprintf("%v", v)})
 	}
 
 	if err := o.conn.Add(addReq); err != nil {
@@ -173,11 +188,11 @@ func (o *ADOperator) updateUser(dn string, id *source.Identity) error {
 	hasChanges := false
 
 	for k, v := range id.Attributes {
-		if !strings.HasPrefix(k, "ad:") {
+		adKey, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
+		if !hasPrefix {
 			continue
 		}
 
-		adKey := k[3:] // "ad:" is 3 bytes
 		val := fmt.Sprintf("%v", v)
 		if val != "" {
 			modReq.Replace(adKey, []string{val})

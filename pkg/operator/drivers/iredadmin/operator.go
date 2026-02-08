@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
+	"golang.org/x/time/rate"
 )
 
 type APIResponse struct {
@@ -45,6 +46,7 @@ type IRedAdminOperator struct {
 	*operator.BaseOperator
 	Client  *http.Client
 	baseURL string
+	limiter *rate.Limiter
 }
 
 func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]any) error {
@@ -55,6 +57,27 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 
 	apiURL, _ := o.GetStringConfig("url")
 	o.baseURL = strings.TrimSuffix(apiURL, "/")
+
+	rateLimit := 50.0
+	if rl, ok := o.GetConfig("rateLimit"); ok {
+		if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
+			rateLimit = rlFloat
+		}
+	}
+
+	o.limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
+
+	if o.Client == nil {
+		o.Client = &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			},
+			Timeout: 30 * time.Second,
+		}
+	}
+
 	return nil
 }
 
@@ -76,12 +99,13 @@ func (o *IRedAdminOperator) login(ctx context.Context) error {
 	data.Set("username", user)
 	data.Set("password", pass)
 
-	var urlBuilder strings.Builder
-	urlBuilder.Grow(len(o.baseURL) + 11)
-	urlBuilder.WriteString(o.baseURL)
-	urlBuilder.WriteString("/api/login")
+	loginURL := o.buildAPIURL("/api/login")
 
-	resp, err := o.Client.PostForm(urlBuilder.String(), data)
+	if err := o.limiter.Wait(ctx); err != nil {
+		return err
+	}
+
+	resp, err := o.Client.PostForm(loginURL, data)
 	if err != nil {
 		return err
 	}
@@ -98,80 +122,134 @@ func (o *IRedAdminOperator) login(ctx context.Context) error {
 	return nil
 }
 
-func (o *IRedAdminOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
+func (o *IRedAdminOperator) SupportsIncrementalSync() bool {
+	return true
+}
+
+func (o *IRedAdminOperator) SyncIncremental(
+	ctx context.Context,
+	state *operator.IncrementalSyncState,
+) (*operator.SyncResult, error) {
 	if err := o.login(ctx); err != nil {
 		return nil, err
 	}
 
-	result := &operator.SyncResult{
-		Errors: make([]error, 0, len(state.Identities)/10),
+	workers := o.getConcurrency()
+	result := &operator.SyncResult{}
+
+	o.processCreates(ctx, state, result, workers)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
 	}
 
-	for uid, id := range state.Identities {
-		if id.Email == "" {
-			continue
-		}
-
-		if id.Disabled {
-			continue
-		}
-
-		userData, err := o.getUserData(ctx, id.Email)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("check user %s (uid: %s): %w", id.Email, uid, err))
-			continue
-		}
-
-		if userData == nil {
-			if state.DryRun {
-				log.Printf("[DRY RUN] Would create user %s (uid: %s)", id.Email, uid)
-				result.IdentitiesCreated++
-			} else {
-				if err := o.createUser(ctx, &id); err != nil {
-					result.Errors = append(result.Errors, fmt.Errorf("create user %s (uid: %s): %w", id.Email, uid, err))
-				} else {
-					result.IdentitiesCreated++
-				}
-			}
-		} else {
-			changes := o.detectChanges(&id, userData)
-			if len(changes) > 0 {
-				if state.DryRun {
-					log.Printf("[DRY RUN] Would update user %s (uid: %s) - changes: %v", id.Email, uid, changes)
-					result.IdentitiesUpdated++
-				} else {
-					if err := o.updateUser(ctx, &id, changes); err != nil {
-						result.Errors = append(result.Errors, fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
-					} else {
-						result.IdentitiesUpdated++
-					}
-				}
-			} else {
-				log.Printf("User %s (uid: %s) is up to date, no changes needed", id.Email, uid)
-			}
-		}
+	o.processUpdates(ctx, state, result, workers)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
 	}
+
+	o.processReprocesses(ctx, state, result, workers)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+
+	o.processDeletes(ctx, state, result, workers)
 
 	return result, nil
 }
 
-func (o *IRedAdminOperator) getUserData(ctx context.Context, email string) (*UserData, error) {
-	var urlBuilder strings.Builder
-	urlBuilder.Grow(len(o.baseURL) + len("/api/user/") + len(email) + 10)
-	urlBuilder.WriteString(o.baseURL)
-	urlBuilder.WriteString("/api/user/")
-	urlBuilder.WriteString(url.PathEscape(email))
+func (o *IRedAdminOperator) Sync(
+	ctx context.Context,
+	state *operator.SyncState,
+) (*operator.SyncResult, error) {
+	if err := o.login(ctx); err != nil {
+		return nil, err
+	}
 
-	resp, err := o.Client.Get(urlBuilder.String())
+	workers := o.getConcurrency()
+	result := &operator.SyncResult{}
+
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	for uid, id := range state.Identities {
+		if id.Email == "" || id.Disabled {
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return result, ctx.Err()
+		default:
+		}
+
+		wg.Add(1)
+		go func(userID string, identity source.Identity) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			enriched := o.EnrichIdentity(identity, state.Groups)
+
+			userData, err := o.getUserData(ctx, identity.Email)
+			if err != nil {
+				o.LogError(fmt.Errorf("check user %s (uid: %s): %w", identity.Email, userID, err))
+				result.ErrCount.Add(1)
+				return
+			}
+
+			if userData == nil {
+				if state.DryRun {
+					o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", identity.Email, userID)
+					result.IdentitiesCreated.Add(1)
+				} else {
+					if err := o.createUser(ctx, &enriched); err != nil {
+						o.LogError(fmt.Errorf("create user %s (uid: %s): %w", identity.Email, userID, err))
+						result.ErrCount.Add(1)
+					} else {
+						result.IdentitiesCreated.Add(1)
+					}
+				}
+			} else {
+				changes := o.detectChanges(&enriched, userData)
+				if len(changes) > 0 {
+					if state.DryRun {
+						o.LogInfo("[DRY RUN] Would update user %s (uid: %s) - changes: %v",
+							identity.Email, userID, changes)
+						result.IdentitiesUpdated.Add(1)
+					} else {
+						if err := o.updateUser(ctx, &enriched, changes); err != nil {
+							o.LogError(fmt.Errorf("update user %s (uid: %s): %w", identity.Email, userID, err))
+							result.ErrCount.Add(1)
+						} else {
+							result.IdentitiesUpdated.Add(1)
+						}
+					}
+				}
+			}
+		}(uid, id)
+	}
+
+	wg.Wait()
+
+	return result, nil
+}
+
+func (o *IRedAdminOperator) getUserData(
+	ctx context.Context,
+	email string,
+) (*UserData, error) {
+	userURL := o.buildUserURL(email)
+
+	if err := o.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
+	resp, err := o.Client.Get(userURL)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
 
 	var apiResp struct {
 		Success bool      `json:"_success"`
@@ -179,8 +257,8 @@ func (o *IRedAdminOperator) getUserData(ctx context.Context, email string) (*Use
 		Data    *UserData `json:"_data"`
 	}
 
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, err
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse user data response: %w", err)
 	}
 
 	if !apiResp.Success {
@@ -190,7 +268,10 @@ func (o *IRedAdminOperator) getUserData(ctx context.Context, email string) (*Use
 	return apiResp.Data, nil
 }
 
-func (o *IRedAdminOperator) detectChanges(id *source.Identity, userData *UserData) map[string]string {
+func (o *IRedAdminOperator) detectChanges(
+	id *source.Identity,
+	userData *UserData,
+) map[string]string {
 	changes := make(map[string]string)
 
 	cn := id.DisplayName
@@ -202,134 +283,22 @@ func (o *IRedAdminOperator) detectChanges(id *source.Identity, userData *UserDat
 	}
 
 	for k, v := range id.Attributes {
-		if strings.HasPrefix(k, "iredadmin:") {
-			fieldName := k[10:]
-			newValue := fmt.Sprintf("%v", v)
+		fieldName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
+		if !hasPrefix {
+			continue
+		}
 
-			existingValue := o.getFieldValue(userData, fieldName)
-			if existingValue != newValue {
-				changes[fieldName] = newValue
-			}
+		newValue := fmt.Sprintf("%v", v)
+		existingValue := o.getFieldValue(userData, fieldName)
+
+		if existingValue != newValue {
+			changes[fieldName] = newValue
 		}
 	}
 
 	return changes
 }
 
-func (o *IRedAdminOperator) getFieldValue(userData *UserData, fieldName string) string {
-	switch fieldName {
-	case "cn":
-		if len(userData.CN) > 0 {
-			return userData.CN[0]
-		}
-	case "givenName":
-		if len(userData.GivenName) > 0 {
-			return userData.GivenName[0]
-		}
-	case "sn":
-		if len(userData.SN) > 0 {
-			return userData.SN[0]
-		}
-	case "preferredLanguage":
-		if len(userData.PreferredLanguage) > 0 {
-			return userData.PreferredLanguage[0]
-		}
-	case "mailQuota":
-		if len(userData.MailQuota) > 0 {
-			return userData.MailQuota[0]
-		}
-	case "accountStatus":
-		if len(userData.AccountStatus) > 0 {
-			return userData.AccountStatus[0]
-		}
-	case "title":
-		if len(userData.Title) > 0 {
-			return userData.Title[0]
-		}
-	}
-	return ""
-}
-
-func (o *IRedAdminOperator) createUser(ctx context.Context, id *source.Identity) error {
-	var urlBuilder strings.Builder
-	urlBuilder.Grow(len(o.baseURL) + len("/api/user/") + len(id.Email) + 10)
-	urlBuilder.WriteString(o.baseURL)
-	urlBuilder.WriteString("/api/user/")
-	urlBuilder.WriteString(url.PathEscape(id.Email))
-
-	data := url.Values{}
-	cn := id.DisplayName
-	if cn == "" {
-		cn = id.Username
-	}
-	data.Set("cn", cn)
-
-	password := "ChangeMe123!"
-	if p, ok := id.Attributes["mailPassword"].(string); ok && p != "" {
-		password = p
-	}
-	data.Set("password", password)
-
-	for k, v := range id.Attributes {
-		if strings.HasPrefix(k, "iredadmin:") {
-			data.Set(k[10:], fmt.Sprintf("%v", v))
-		}
-	}
-
-	return o.execPost(ctx, urlBuilder.String(), data)
-}
-
-func (o *IRedAdminOperator) updateUser(ctx context.Context, id *source.Identity, changes map[string]string) error {
-	if len(changes) == 0 {
-		return nil
-	}
-
-	data := url.Values{}
-	for k, v := range changes {
-		data.Set(k, v)
-	}
-
-	var urlBuilder strings.Builder
-	urlBuilder.Grow(len(o.baseURL) + len("/api/user/") + len(id.Email) + 10)
-	urlBuilder.WriteString(o.baseURL)
-	urlBuilder.WriteString("/api/user/")
-	urlBuilder.WriteString(url.PathEscape(id.Email))
-
-	req, err := http.NewRequestWithContext(ctx, "PUT", urlBuilder.String(), strings.NewReader(data.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := o.Client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	return o.checkResponse(resp)
-}
-
-func (o *IRedAdminOperator) execPost(ctx context.Context, url string, data url.Values) error {
-	resp, err := o.Client.PostForm(url, data)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return o.checkResponse(resp)
-}
-
-func (o *IRedAdminOperator) checkResponse(resp *http.Response) error {
-	var apiResp APIResponse
-	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return fmt.Errorf("failed to parse iRedAdmin response: %s", body)
-	}
-
-	if !apiResp.Success {
-		return fmt.Errorf("iredadmin error: %s", apiResp.Msg)
-	}
+func (o *IRedAdminOperator) Close() error {
 	return nil
 }
-
-func (o *IRedAdminOperator) Close() error { return nil }

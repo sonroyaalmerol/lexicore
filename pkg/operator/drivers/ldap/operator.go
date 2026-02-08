@@ -17,7 +17,11 @@ type LDAPOperator struct {
 
 func (o *LDAPOperator) Initialize(ctx context.Context, config map[string]any) error {
 	o.SetConfig(config)
-	return o.Validate(ctx)
+	if err := o.Validate(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (o *LDAPOperator) Validate(ctx context.Context) error {
@@ -55,9 +59,7 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 	}
 	defer o.Close()
 
-	res := &operator.SyncResult{
-		Errors: make([]error, 0, len(state.Identities)/10),
-	}
+	res := &operator.SyncResult{}
 
 	userBaseDN, _ := o.GetStringConfig("userBaseDN")
 	rdnAttr, _ := o.GetStringConfig("rdnAttribute")
@@ -66,9 +68,11 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 	}
 
 	for uid, id := range state.Identities {
-		rdnValue := id.Username
-		if id.UID != "" {
-			rdnValue = id.UID
+		enriched := o.EnrichIdentity(id, state.Groups)
+
+		rdnValue := enriched.Username
+		if enriched.UID != "" {
+			rdnValue = enriched.UID
 		}
 
 		var dnBuilder strings.Builder
@@ -81,7 +85,7 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 		dn := dnBuilder.String()
 
 		if state.DryRun {
-			res.IdentitiesUpdated++
+			res.IdentitiesUpdated.Add(1)
 			continue
 		}
 
@@ -92,16 +96,18 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 		sr, err := o.conn.Search(search)
 
 		if err != nil || len(sr.Entries) == 0 {
-			if err := o.createEntry(dn, &id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("create %s (uid: %s) failed: %w", dn, uid, err))
+			if err := o.createEntry(dn, &enriched); err != nil {
+				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", dn, uid, err))
+				res.ErrCount.Add(1)
 			} else {
-				res.IdentitiesCreated++
+				res.IdentitiesCreated.Add(1)
 			}
 		} else {
-			if err := o.updateEntry(dn, &id); err != nil {
-				res.Errors = append(res.Errors, fmt.Errorf("update %s (uid: %s) failed: %w", dn, uid, err))
+			if err := o.updateEntry(dn, &enriched); err != nil {
+				o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", dn, uid, err))
+				res.ErrCount.Add(1)
 			} else {
-				res.IdentitiesUpdated++
+				res.IdentitiesUpdated.Add(1)
 			}
 		}
 	}
@@ -127,10 +133,11 @@ func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
 	}
 
 	for k, v := range id.Attributes {
-		if strings.HasPrefix(k, "ldap:") {
-			attrName := k[5:] // "ldap:" is 5 bytes
-			addReq.Attribute(attrName, []string{fmt.Sprintf("%v", v)})
+		attrName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
+		if !hasPrefix {
+			continue
 		}
+		addReq.Attribute(attrName, []string{fmt.Sprintf("%v", v)})
 	}
 
 	return o.conn.Add(addReq)
@@ -141,11 +148,12 @@ func (o *LDAPOperator) updateEntry(dn string, id *source.Identity) error {
 	hasChanges := false
 
 	for k, v := range id.Attributes {
-		if strings.HasPrefix(k, "ldap:") {
-			attrName := k[5:]
-			modReq.Replace(attrName, []string{fmt.Sprintf("%v", v)})
-			hasChanges = true
+		attrName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
+		if !hasPrefix {
+			continue
 		}
+		modReq.Replace(attrName, []string{fmt.Sprintf("%v", v)})
+		hasChanges = true
 	}
 
 	if !hasChanges {

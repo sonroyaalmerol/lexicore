@@ -44,7 +44,16 @@ func (o *AuthentikSource) Validate(ctx context.Context) error {
 	pageSize := int32(100)
 	pageSizeRaw, ok := o.GetConfig("pageSize")
 	if ok {
-		if pageSize, ok = pageSizeRaw.(int32); !ok {
+		switch v := pageSizeRaw.(type) {
+		case int:
+			pageSize = int32(v)
+		case int32:
+			pageSize = v
+		case int64:
+			pageSize = int32(v)
+		case float64:
+			pageSize = int32(v)
+		default:
 			pageSize = int32(100)
 		}
 	}
@@ -178,7 +187,7 @@ func (s *AuthentikSource) GetChangesSince(ctx context.Context, since time.Time) 
 		resp, _, err := req.Execute()
 		if err != nil {
 			changes.FullSync = true
-			return changes, now, nil
+			return changes, now, fmt.Errorf("failed to fetch modified users, falling back to full sync: %w", err)
 		}
 
 		for _, user := range resp.Results {
@@ -197,13 +206,13 @@ func (s *AuthentikSource) GetChangesSince(ctx context.Context, since time.Time) 
 	modifiedGroupIDs, err := s.fetchModifiedGroupsSince(ctx, since)
 	if err != nil {
 		changes.FullSync = true
-		return changes, now, nil
+		return changes, now, fmt.Errorf("failed to fetch modified groups, falling back to full sync: %w", err)
 	}
 
 	for groupID := range modifiedGroupIDs {
 		group, _, err := client.CoreApi.CoreGroupsRetrieve(ctx, groupID).Execute()
 		if err != nil {
-			// Group might have been deleted, skip it
+			// Group might have been deleted between event fetch and retrieve
 			continue
 		}
 		changes.ModifiedGroups = append(changes.ModifiedGroups, s.mapGroup(*group))
@@ -212,7 +221,7 @@ func (s *AuthentikSource) GetChangesSince(ctx context.Context, since time.Time) 
 	deletedUsers, deletedGroups, err := s.fetchDeletionsSince(ctx, since)
 	if err != nil {
 		changes.FullSync = true
-		return changes, now, nil
+		return changes, now, fmt.Errorf("failed to fetch deletions, falling back to full sync: %w", err)
 	}
 
 	changes.DeletedIdentities = deletedUsers
@@ -237,7 +246,8 @@ func (s *AuthentikSource) fetchModifiedGroupsSince(
 		req := client.EventsApi.EventsEventsList(ctx).
 			Page(page).
 			Ordering("-created").
-			ContextModelName("group")
+			ContextModelName("group").
+			Actions([]string{"model_created", "model_updated"})
 
 		if config.PageSize > 0 {
 			req = req.PageSize(config.PageSize)
@@ -255,14 +265,12 @@ func (s *AuthentikSource) fetchModifiedGroupsSince(
 				break
 			}
 
-			// Look for model_created and model_updated events
-			if event.Action == "model_created" || event.Action == "model_updated" {
-				if modelRaw, ok := event.Context["model"]; ok {
-					if modelMap, ok := modelRaw.(map[string]any); ok {
-						if pkRaw, ok := modelMap["pk"]; ok {
-							if groupID, ok := pkRaw.(string); ok {
-								modifiedGroupIDs[groupID] = true
-							}
+			if modelRaw, ok := event.Context["model"]; ok {
+				if modelMap, ok := modelRaw.(map[string]any); ok {
+					if pkRaw, ok := modelMap["pk"]; ok {
+						groupID := s.convertToString(pkRaw)
+						if groupID != "" {
+							modifiedGroupIDs[groupID] = true
 						}
 					}
 				}
@@ -291,18 +299,16 @@ func (s *AuthentikSource) fetchDeletionsSince(
 	deletedGroupIDs := make(map[string]bool)
 
 	page := int32(1)
-
 	for {
 		req := client.EventsApi.EventsEventsList(ctx).
 			Page(page).
 			Ordering("-created").
-			Action("model_deleted")
+			Action("model_deleted").
+			ContextModelName("user")
 
 		if config.PageSize > 0 {
 			req = req.PageSize(config.PageSize)
 		}
-
-		req = req.ContextModelName("user")
 
 		resp, _, err := req.Execute()
 		if err != nil {
@@ -319,22 +325,10 @@ func (s *AuthentikSource) fetchDeletionsSince(
 			if modelRaw, ok := event.Context["model"]; ok {
 				if modelMap, ok := modelRaw.(map[string]any); ok {
 					if pkRaw, ok := modelMap["pk"]; ok {
-						var userID string
-						switch v := pkRaw.(type) {
-						case float64:
-							userID = strconv.Itoa(int(v))
-						case int:
-							userID = strconv.Itoa(v)
-						case int32:
-							userID = strconv.Itoa(int(v))
-						case int64:
-							userID = strconv.Itoa(int(v))
-						case string:
-							userID = v
-						default:
-							continue
+						userID := s.convertToString(pkRaw)
+						if userID != "" {
+							deletedUserIDs[userID] = true
 						}
-						deletedUserIDs[userID] = true
 					}
 				}
 			}
@@ -373,7 +367,8 @@ func (s *AuthentikSource) fetchDeletionsSince(
 			if modelRaw, ok := event.Context["model"]; ok {
 				if modelMap, ok := modelRaw.(map[string]any); ok {
 					if pkRaw, ok := modelMap["pk"]; ok {
-						if groupID, ok := pkRaw.(string); ok {
+						groupID := s.convertToString(pkRaw)
+						if groupID != "" {
 							deletedGroupIDs[groupID] = true
 						}
 					}
@@ -400,6 +395,23 @@ func (s *AuthentikSource) fetchDeletionsSince(
 	return deletedUsers, deletedGroups, nil
 }
 
+func (s *AuthentikSource) convertToString(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case int:
+		return strconv.Itoa(val)
+	case int32:
+		return strconv.Itoa(int(val))
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		return strconv.FormatInt(int64(val), 10)
+	default:
+		return ""
+	}
+}
+
 func (s *AuthentikSource) mapUser(u authentik.User) source.Identity {
 	email := ""
 	if u.Email != nil {
@@ -419,8 +431,8 @@ func (s *AuthentikSource) mapUser(u authentik.User) source.Identity {
 
 func (s *AuthentikSource) mapGroup(g authentik.Group) source.Group {
 	members := make([]string, len(g.Users))
-	for i, u := range g.Users {
-		members[i] = fmt.Sprintf("%v", u)
+	for i, userPK := range g.Users {
+		members[i] = strconv.Itoa(int(userPK))
 	}
 
 	description := ""

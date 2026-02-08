@@ -106,15 +106,14 @@ func (m *Manager) reconcile(targetName string) error {
 		return fmt.Errorf("failed to apply transformations: %w", err)
 	}
 
-	// Compute diff against target cache
-	diff, err := targetCache.UpdateSnapshot(transformedIdentities, transformedGroups)
+	diff, err := targetCache.UpdateSnapshot(m.shutdownCtx, transformedIdentities, transformedGroups)
 	if err != nil {
 		return fmt.Errorf("failed to compute diff: %w", err)
 	}
 
 	// Update source cache
 	if fetchType == "full" {
-		_, err = sourceCache.UpdateSnapshot(identities, groups)
+		_, err = sourceCache.UpdateSnapshot(m.shutdownCtx, identities, groups)
 		if err != nil {
 			m.logger.Warn(
 				"Failed to update source cache",
@@ -131,10 +130,12 @@ func (m *Manager) reconcile(targetName string) error {
 		zap.Int("identities_to_create", len(diff.IdentitiesToCreate)),
 		zap.Int("identities_to_update", len(diff.IdentitiesToUpdate)),
 		zap.Int("identities_to_delete", len(diff.IdentitiesToDelete)),
+		zap.Int("identities_to_reprocess", len(diff.IdentitiesToReprocess)),
 		zap.Int("groups_to_create", len(diff.GroupsToCreate)),
 		zap.Int("groups_to_update", len(diff.GroupsToUpdate)),
 		zap.Int("groups_to_delete", len(diff.GroupsToDelete)),
 		zap.Int("total_changes", diff.TotalChanges),
+		zap.Bool("affected_by_group_changes", diff.AffectedByGroupChanges),
 	)
 
 	// Skip sync if no changes
@@ -157,15 +158,16 @@ func (m *Manager) reconcile(targetName string) error {
 	var result *operator.SyncResult
 
 	if incrementalOp, ok := target.Operator.(operator.IncrementalOperator); ok && incrementalOp.SupportsIncrementalSync() {
-		// Use incremental sync
 		incrementalState := &operator.IncrementalSyncState{
-			IdentitiesToCreate: toIdentitySlice(diff.IdentitiesToCreate),
-			IdentitiesToUpdate: toIdentitySlice(diff.IdentitiesToUpdate),
-			IdentitiesToDelete: toIdentitySlice(diff.IdentitiesToDelete),
-			GroupsToCreate:     toGroupSlice(diff.GroupsToCreate),
-			GroupsToUpdate:     toGroupSlice(diff.GroupsToUpdate),
-			GroupsToDelete:     toGroupSlice(diff.GroupsToDelete),
-			DryRun:             target.manifest.Spec.DryRun,
+			IdentitiesToCreate:    toIdentitySlice(diff.IdentitiesToCreate),
+			IdentitiesToUpdate:    toIdentitySlice(diff.IdentitiesToUpdate),
+			IdentitiesToDelete:    toIdentitySlice(diff.IdentitiesToDelete),
+			IdentitiesToReprocess: toIdentitySlice(diff.IdentitiesToReprocess),
+			GroupsToCreate:        toGroupSlice(diff.GroupsToCreate),
+			GroupsToUpdate:        toGroupSlice(diff.GroupsToUpdate),
+			GroupsToDelete:        toGroupSlice(diff.GroupsToDelete),
+			AllGroups:             transformedGroups, // Provide full group context
+			DryRun:                target.manifest.Spec.DryRun,
 		}
 
 		result, err = incrementalOp.SyncIncremental(m.shutdownCtx, incrementalState)
@@ -217,29 +219,29 @@ func (m *Manager) reconcile(targetName string) error {
 		zap.String("target", targetName),
 		zap.Duration("duration", time.Since(startTime)),
 		zap.String("fetch_type", fetchType),
-		zap.Int("identities_created", result.IdentitiesCreated),
-		zap.Int("identities_updated", result.IdentitiesUpdated),
-		zap.Int("identities_deleted", result.IdentitiesDeleted),
-		zap.Int("groups_created", result.GroupsCreated),
-		zap.Int("groups_updated", result.GroupsUpdated),
-		zap.Int("groups_deleted", result.GroupsDeleted),
-		zap.Int("errors", len(result.Errors)),
+		zap.Uint64("identities_created", result.IdentitiesCreated.Load()),
+		zap.Uint64("identities_updated", result.IdentitiesUpdated.Load()),
+		zap.Uint64("identities_deleted", result.IdentitiesDeleted.Load()),
+		zap.Uint64("identities_reprocessed", result.IdentitiesReprocessed.Load()),
+		zap.Uint64("groups_created", result.GroupsCreated.Load()),
+		zap.Uint64("groups_updated", result.GroupsUpdated.Load()),
+		zap.Uint64("groups_deleted", result.GroupsDeleted.Load()),
+		zap.Uint64("errors", result.ErrCount.Load()),
 	)
 
-	if len(result.Errors) > 0 {
-		return fmt.Errorf("sync completed with %d errors", len(result.Errors))
+	if result.ErrCount.Load() > 0 {
+		return fmt.Errorf("sync completed with %d errors", result.ErrCount.Load())
 	}
 
 	return nil
 }
 
 func (m *Manager) applyChangesToSnapshot(
-	cache *cache.Store,
+	cache *cache.Cache,
 	changes *source.Changes,
 ) (map[string]source.Identity, map[string]source.Group) {
 	snapshot := cache.GetSnapshot()
 
-	// Start with current snapshot data
 	identities := make(map[string]source.Identity, len(snapshot.Identities))
 	for key, cached := range snapshot.Identities {
 		identities[key] = cached.Data
@@ -250,7 +252,6 @@ func (m *Manager) applyChangesToSnapshot(
 		groups[key] = cached.Data
 	}
 
-	// Apply modifications
 	for _, identity := range changes.ModifiedIdentities {
 		key := identityKey(identity)
 		identities[key] = identity
@@ -261,7 +262,6 @@ func (m *Manager) applyChangesToSnapshot(
 		groups[key] = group
 	}
 
-	// Apply deletions
 	for _, uid := range changes.DeletedIdentities {
 		delete(identities, uid)
 	}

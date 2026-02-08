@@ -21,7 +21,11 @@ type DovecotOperator struct {
 
 func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any) error {
 	o.SetConfig(config)
-	return o.Validate(ctx)
+	if err := o.Validate(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (o *DovecotOperator) Validate(ctx context.Context) error {
@@ -33,36 +37,38 @@ func (o *DovecotOperator) Validate(ctx context.Context) error {
 }
 
 func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
-	result := &operator.SyncResult{
-		Errors: make([]error, 0, len(state.Identities)/10),
-	}
+	result := &operator.SyncResult{}
 	apiURL, _ := o.GetStringConfig("url")
 
 	for uid, identity := range state.Identities {
-		err := o.exec(ctx, apiURL, identity.Username, "mailboxCreate", map[string]any{
-			"user":    identity.Username,
+		enriched := o.EnrichIdentity(identity, state.Groups)
+
+		err := o.exec(ctx, apiURL, enriched.Username, "mailboxCreate", map[string]any{
+			"user":    enriched.Username,
 			"mailbox": "INBOX",
 		}, state.DryRun)
 
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("user %s (uid: %s) mailbox init failed: %w", identity.Username, uid, err))
+			o.LogError(fmt.Errorf("user %s (uid: %s) mailbox init failed: %w", enriched.Username, uid, err))
+			result.ErrCount.Add(1)
 			continue
 		}
 
-		if aclStr, ok := identity.Attributes["dovecot_acl"].(string); ok && aclStr != "" {
-			err = o.exec(ctx, apiURL, identity.Username, "aclSet", map[string]any{
-				"user":    identity.Username,
+		if aclStr, ok := enriched.Attributes[fmt.Sprintf("%sacl", o.GetAttributePrefix())].(string); ok && aclStr != "" {
+			err = o.exec(ctx, apiURL, enriched.Username, "aclSet", map[string]any{
+				"user":    enriched.Username,
 				"mailbox": "INBOX",
 				"right":   aclStr,
 			}, state.DryRun)
 
 			if err != nil {
-				result.Errors = append(result.Errors, fmt.Errorf("user %s (uid: %s) acl sync failed: %w", identity.Username, uid, err))
+				o.LogError(fmt.Errorf("user %s (uid: %s) acl sync failed: %w", enriched.Username, uid, err))
+				result.ErrCount.Add(1)
 				continue
 			}
 		}
 
-		result.IdentitiesUpdated++
+		result.IdentitiesUpdated.Add(1)
 	}
 
 	return result, nil
@@ -118,4 +124,6 @@ func (o *DovecotOperator) exec(ctx context.Context, apiURL, user, command string
 	return nil
 }
 
-func (o *DovecotOperator) Close() error { return nil }
+func (o *DovecotOperator) Close() error {
+	return nil
+}

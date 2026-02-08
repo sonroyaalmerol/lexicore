@@ -7,12 +7,12 @@ import (
 )
 
 func TestBaseOperator_Name(t *testing.T) {
-	op := NewBaseOperator("test-operator")
+	op := NewBaseOperator("test-operator", nil)
 	assert.Equal(t, "test-operator", op.Name())
 }
 
 func TestBaseOperator_Config(t *testing.T) {
-	op := NewBaseOperator("test")
+	op := NewBaseOperator("test", nil)
 
 	config := map[string]any{
 		"key1": "value1",

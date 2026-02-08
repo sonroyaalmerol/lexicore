@@ -32,14 +32,18 @@ type reconcileTask struct {
 type ActiveOperator struct {
 	operator.Operator
 	manifest       *manifest.SyncTarget
-	cache          *cache.Store
+	cache          *cache.Cache
 	lastReconciled time.Time
+	ctx            context.Context
+	closeCtx       context.CancelFunc
 }
 
 type ActiveSource struct {
 	source.Source
 	manifest *manifest.IdentitySource
-	cache    *cache.Store
+	cache    *cache.Cache
+	ctx      context.Context
+	closeCtx context.CancelFunc
 }
 
 type Manager struct {
@@ -84,12 +88,12 @@ func NewManager(
 	// First-party operators
 	m.RegisterOperator("active-directory", func() operator.Operator {
 		return &adop.ADOperator{
-			BaseOperator: operator.NewBaseOperator("active-directory"),
+			BaseOperator: operator.NewBaseOperator("active-directory", m.logger),
 		}
 	})
 	m.RegisterOperator("dovecot-acl", func() operator.Operator {
 		return &dovecotop.DovecotOperator{
-			BaseOperator: operator.NewBaseOperator("dovecot-acl"),
+			BaseOperator: operator.NewBaseOperator("dovecot-acl", m.logger),
 			Client: &http.Client{
 				Timeout: 15 * time.Second,
 			},
@@ -99,7 +103,7 @@ func NewManager(
 		jar, _ := cookiejar.New(nil)
 
 		return &iredadminop.IRedAdminOperator{
-			BaseOperator: operator.NewBaseOperator("iredadmin"),
+			BaseOperator: operator.NewBaseOperator("iredadmin", m.logger),
 			Client: &http.Client{
 				Jar:     jar,
 				Timeout: 15 * time.Second,
@@ -108,19 +112,19 @@ func NewManager(
 	})
 	m.RegisterOperator("ldap", func() operator.Operator {
 		return &ldapop.LDAPOperator{
-			BaseOperator: operator.NewBaseOperator("ldap"),
+			BaseOperator: operator.NewBaseOperator("ldap", m.logger),
 		}
 	})
 
 	// First-party sources
 	m.RegisterSource("ldap", func() source.Source {
 		return &ldapsrc.LDAPSource{
-			BaseSource: source.NewBaseSource("ldap"),
+			BaseSource: source.NewBaseSource("ldap", m.logger),
 		}
 	})
 	m.RegisterSource("authentik", func() source.Source {
 		return &authentiksrc.AuthentikSource{
-			BaseSource: source.NewBaseSource("authentik"),
+			BaseSource: source.NewBaseSource("authentik", m.logger),
 		}
 	})
 
@@ -174,32 +178,46 @@ func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
 		}
 	}
 
+	ctx, cancel := context.WithCancel(m.shutdownCtx)
+
 	var opSrc source.Source
 	if src.Spec.PluginSource != nil {
 		var err error
 		opSrc, err = m.pluginManager.loadPluginSource(
-			m.shutdownCtx,
+			ctx,
 			src.Spec.PluginSource,
+			m.logger,
 		)
 		if err != nil {
+			cancel()
 			return fmt.Errorf("failed to load plugin: %w", err)
 		}
 	} else {
 		if newSource == nil {
+			cancel()
 			return fmt.Errorf("source %s not found", src.Spec.Type)
 		}
 		opSrc = newSource()
 	}
 
-	err := opSrc.Initialize(m.shutdownCtx, src.Spec.Config)
+	err := opSrc.Initialize(ctx, src.Spec.Config)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to initialize source operator: %w", err)
 	}
+
+	cacheStore := cache.NewCache(m.db, fmt.Sprintf("source/%s", src.Name), m.logger)
+	if err := cacheStore.LoadFromEtcd(ctx); err != nil {
+		m.logger.Error("failed to load cache from etcd", zap.Error(err))
+	}
+	go cacheStore.WatchSnapshots(ctx)
 
 	activeSource := &ActiveSource{
 		Source:   opSrc,
 		manifest: src,
-		cache:    cache.NewStore(),
+		cache:    cacheStore,
+		ctx:      ctx,
+		closeCtx: cancel,
 	}
 
 	m.activeSources.Store(src.Name, activeSource)
@@ -211,12 +229,15 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 		return fmt.Errorf("source %s not found", target.Spec.SourceRef)
 	}
 
+	ctx, cancel := context.WithCancel(m.shutdownCtx)
+
 	var newTarget func() operator.Operator
 
 	if target.Spec.Operator != "plugin" {
 		var ok bool
 		newTarget, ok = m.operatorFactory.Load(target.Spec.Operator)
 		if !ok && target.Spec.PluginSource == nil {
+			cancel()
 			return fmt.Errorf("operator %s not found", target.Spec.Operator)
 		}
 	}
@@ -225,28 +246,40 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 	if target.Spec.PluginSource != nil {
 		var err error
 		op, err = m.pluginManager.loadPluginOperator(
-			m.shutdownCtx,
+			ctx,
 			target.Spec.PluginSource,
+			m.logger,
 		)
 		if err != nil {
+			cancel()
 			return fmt.Errorf("failed to load plugin: %w", err)
 		}
 	} else {
 		if newTarget == nil {
+			cancel()
 			return fmt.Errorf("operator %s not found", target.Spec.Operator)
 		}
 		op = newTarget()
 	}
 
-	if err := op.Initialize(m.shutdownCtx, target.Spec.Config); err != nil {
+	if err := op.Initialize(ctx, target.Spec.Config); err != nil {
+		cancel()
 		return fmt.Errorf("failed to initialize plugin operator: %w", err)
 	}
+
+	cacheStore := cache.NewCache(m.db, fmt.Sprintf("operator/%s", target.Name), m.logger)
+	if err := cacheStore.LoadFromEtcd(ctx); err != nil {
+		m.logger.Error("failed to load cache from etcd", zap.Error(err))
+	}
+	go cacheStore.WatchSnapshots(ctx)
 
 	activeTarget := &ActiveOperator{
 		Operator:       op,
 		manifest:       target,
-		cache:          cache.NewStore(),
+		cache:          cacheStore,
 		lastReconciled: time.Time{}, // Zero value = never reconciled
+		ctx:            ctx,
+		closeCtx:       cancel,
 	}
 
 	m.activeOperators.Store(target.Name, activeTarget)
@@ -387,11 +420,28 @@ func (m *Manager) GetIdentitySource(name string) (source.Source, bool) {
 }
 
 func (m *Manager) RemoveIdentitySource(name string) {
-	m.activeSources.Delete(name)
+	op, ok := m.activeSources.LoadAndDelete(name)
+	if ok && op != nil {
+		if op.cache != nil {
+			op.cache.Clear(context.Background())
+		}
+		if op.closeCtx != nil {
+			op.closeCtx()
+		}
+	}
 }
 
 func (m *Manager) RemoveSyncTarget(name string) {
-	m.activeOperators.Delete(name)
+	op, ok := m.activeOperators.LoadAndDelete(name)
+	if ok && op != nil {
+		if op.cache != nil {
+			op.cache.Clear(context.Background())
+		}
+		if op.closeCtx != nil {
+			op.closeCtx()
+		}
+	}
+
 	m.logger.Info(
 		"Removed SyncTarget from active reconciliation",
 		zap.String("name", name),

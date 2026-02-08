@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	starlarklib "codeberg.org/lexicore/lexicore/pkg/plugin"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 	"go.starlark.net/syntax"
+	"go.uber.org/zap"
 )
 
 type PluginSource struct {
@@ -19,7 +21,7 @@ type PluginSource struct {
 	module  *starlarkstruct.Module
 }
 
-func NewPluginSource(scriptPath string) (*PluginSource, error) {
+func NewPluginSource(scriptPath string, logger *zap.Logger) (*PluginSource, error) {
 	content, err := os.ReadFile(scriptPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read starlark script: %w", err)
@@ -57,7 +59,7 @@ func NewPluginSource(scriptPath string) (*PluginSource, error) {
 	}
 
 	return &PluginSource{
-		BaseSource: NewBaseSource(sourceName),
+		BaseSource: NewBaseSource(sourceName, logger),
 		thread:     thread,
 		globals:    globals,
 	}, nil
@@ -196,6 +198,66 @@ func (s *PluginSource) GetGroups(ctx context.Context) (map[string]Group, error) 
 	}
 
 	return groups, nil
+}
+
+func (s *PluginSource) Close() error {
+	closeFunc, ok := s.globals["close"]
+	if !ok {
+		// Close is optional
+		return nil
+	}
+
+	callable, ok := closeFunc.(starlark.Callable)
+	if !ok {
+		return fmt.Errorf("close is not callable")
+	}
+
+	result, err := starlark.Call(s.thread, callable, nil, nil)
+	if err != nil {
+		return fmt.Errorf("close failed: %w", err)
+	}
+
+	if errStr := extractError(result); errStr != "" {
+		return fmt.Errorf("%s", errStr)
+	}
+
+	return nil
+}
+
+func (s *PluginSource) SupportsChangeDetection() bool {
+	_, ok := s.globals["get_changes_since"]
+	return ok
+}
+
+func (s *PluginSource) GetChangesSince(
+	ctx context.Context,
+	since time.Time,
+) (*Changes, time.Time, error) {
+	getChangesFunc, ok := s.globals["get_changes_since"]
+	if !ok {
+		return nil, time.Time{}, fmt.Errorf("get_changes_since function not found")
+	}
+
+	callable, ok := getChangesFunc.(starlark.Callable)
+	if !ok {
+		return nil, time.Time{}, fmt.Errorf("get_changes_since is not callable")
+	}
+
+	configDict := goMapToStarlarkDict(s.config)
+	sinceUnix := starlark.MakeInt64(since.Unix())
+	args := starlark.Tuple{configDict, sinceUnix}
+
+	result, err := starlark.Call(s.thread, callable, args, nil)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("get_changes_since failed: %w", err)
+	}
+
+	changes, serverTime, err := starlarkToChanges(result)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+
+	return changes, serverTime, nil
 }
 
 // Helper functions
@@ -361,6 +423,90 @@ func starlarkToGroup(v starlark.Value) (*Group, error) {
 	}
 
 	return group, nil
+}
+
+func starlarkToChanges(v starlark.Value) (*Changes, time.Time, error) {
+	dict, ok := v.(*starlark.Dict)
+	if !ok {
+		return nil, time.Time{}, fmt.Errorf("get_changes_since must return a dict")
+	}
+
+	changes := &Changes{
+		ModifiedIdentities: make([]Identity, 0),
+		DeletedIdentities:  make([]string, 0),
+		ModifiedGroups:     make([]Group, 0),
+		DeletedGroups:      make([]string, 0),
+		FullSync:           false,
+	}
+
+	// Parse full_sync flag
+	if val, found, _ := dict.Get(starlark.String("full_sync")); found {
+		if fullSync, ok := val.(starlark.Bool); ok {
+			changes.FullSync = bool(fullSync)
+		}
+	}
+
+	// Parse server_time (unix timestamp)
+	var serverTime time.Time
+	if val, found, _ := dict.Get(starlark.String("server_time")); found {
+		if timeInt, ok := val.(starlark.Int); ok {
+			timestamp, _ := timeInt.Int64()
+			serverTime = time.Unix(timestamp, 0)
+		}
+	} else {
+		serverTime = time.Now()
+	}
+
+	// Parse modified_identities
+	if val, found, _ := dict.Get(starlark.String("modified_identities")); found {
+		if list, ok := val.(*starlark.List); ok {
+			for i := 0; i < list.Len(); i++ {
+				identity, err := starlarkToIdentity(list.Index(i))
+				if err != nil {
+					return nil, time.Time{}, fmt.Errorf(
+						"failed to parse modified identity: %w",
+						err,
+					)
+				}
+				changes.ModifiedIdentities = append(changes.ModifiedIdentities, *identity)
+			}
+		}
+	}
+
+	// Parse deleted_identities
+	if val, found, _ := dict.Get(starlark.String("deleted_identities")); found {
+		if list, ok := val.(*starlark.List); ok {
+			for i := 0; i < list.Len(); i++ {
+				uid := string(list.Index(i).(starlark.String))
+				changes.DeletedIdentities = append(changes.DeletedIdentities, uid)
+			}
+		}
+	}
+
+	// Parse modified_groups
+	if val, found, _ := dict.Get(starlark.String("modified_groups")); found {
+		if list, ok := val.(*starlark.List); ok {
+			for i := 0; i < list.Len(); i++ {
+				group, err := starlarkToGroup(list.Index(i))
+				if err != nil {
+					return nil, time.Time{}, fmt.Errorf("failed to parse modified group: %w", err)
+				}
+				changes.ModifiedGroups = append(changes.ModifiedGroups, *group)
+			}
+		}
+	}
+
+	// Parse deleted_groups
+	if val, found, _ := dict.Get(starlark.String("deleted_groups")); found {
+		if list, ok := val.(*starlark.List); ok {
+			for i := 0; i < list.Len(); i++ {
+				gid := string(list.Index(i).(starlark.String))
+				changes.DeletedGroups = append(changes.DeletedGroups, gid)
+			}
+		}
+	}
+
+	return changes, serverTime, nil
 }
 
 func starlarkDictToGoMap(dict *starlark.Dict) map[string]any {

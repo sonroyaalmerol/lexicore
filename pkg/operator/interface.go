@@ -2,6 +2,7 @@ package operator
 
 import (
 	"context"
+	"sync/atomic"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
@@ -39,15 +40,33 @@ type IncrementalSyncState struct {
 	GroupsToCreate     []source.Group
 	GroupsToUpdate     []source.Group
 	GroupsToDelete     []source.Group
-	DryRun             bool
+
+	// Identities that need reprocessing due to group attribute changes
+	// The operator can recalculate derived attributes using the group context
+	IdentitiesToReprocess []source.Identity
+
+	// Full group context for deriving attributes
+	// Available even in incremental mode for attribute computation
+	AllGroups map[string]source.Group
+
+	DryRun bool
 }
 
 type SyncResult struct {
-	IdentitiesCreated int
-	IdentitiesUpdated int
-	IdentitiesDeleted int
-	GroupsCreated     int
-	GroupsUpdated     int
-	GroupsDeleted     int
-	Errors            []error
+	IdentitiesCreated     atomic.Uint64
+	IdentitiesUpdated     atomic.Uint64
+	IdentitiesDeleted     atomic.Uint64
+	GroupsCreated         atomic.Uint64
+	GroupsUpdated         atomic.Uint64
+	GroupsDeleted         atomic.Uint64
+	IdentitiesReprocessed atomic.Uint64
+	ErrCount              atomic.Uint64
+}
+
+type GroupAttributeMapping struct {
+	SourceAttribute string `json:"sourceAttribute"`
+	TargetAttribute string `json:"targetAttribute"`
+	AggregationMode string `json:"aggregationMode"` // first, last, max, min, append, override, weighted
+	DefaultValue    any    `json:"defaultValue,omitempty"`
+	WeightAttribute string `json:"weightAttribute,omitempty"`
 }
