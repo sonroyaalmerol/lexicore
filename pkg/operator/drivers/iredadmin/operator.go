@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -58,6 +59,8 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 	apiURL, _ := o.GetStringConfig("url")
 	o.baseURL = strings.TrimSuffix(apiURL, "/")
 
+	jar, _ := cookiejar.New(nil)
+
 	rateLimit := 50.0
 	if rl, ok := o.GetConfig("rateLimit"); ok {
 		if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
@@ -69,6 +72,7 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 
 	if o.Client == nil {
 		o.Client = &http.Client{
+			Jar: jar,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
@@ -190,6 +194,8 @@ func (o *IRedAdminOperator) Sync(
 			defer func() { <-sem }()
 
 			enriched := o.EnrichIdentity(identity, state.Groups)
+
+			o.LogInfo("checking user %s (uid: %s)", identity.Email, userID)
 
 			userData, err := o.getUserData(ctx, identity.Email)
 			if err != nil {

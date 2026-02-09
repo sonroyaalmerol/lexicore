@@ -3,8 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/cookiejar"
 	"sync"
 	"time"
 
@@ -94,20 +92,11 @@ func NewManager(
 	m.RegisterOperator("dovecot-acl", func() operator.Operator {
 		return &dovecotop.DovecotOperator{
 			BaseOperator: operator.NewBaseOperator("dovecot-acl", m.logger),
-			Client: &http.Client{
-				Timeout: 15 * time.Second,
-			},
 		}
 	})
 	m.RegisterOperator("iredadmin", func() operator.Operator {
-		jar, _ := cookiejar.New(nil)
-
 		return &iredadminop.IRedAdminOperator{
 			BaseOperator: operator.NewBaseOperator("iredadmin", m.logger),
-			Client: &http.Client{
-				Jar:     jar,
-				Timeout: 15 * time.Second,
-			},
 		}
 	})
 	m.RegisterOperator("ldap", func() operator.Operator {

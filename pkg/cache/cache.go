@@ -2,15 +2,13 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/store"
-	"github.com/cespare/xxhash/v2"
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.uber.org/zap"
 )
@@ -20,35 +18,6 @@ const (
 	lockPrefix     = "/lexicore.io/cache/locks"
 )
 
-type Snapshot struct {
-	Identities   map[string]*CachedIdentity
-	Groups       map[string]*CachedGroup
-	Version      int64
-	CapturedAt   time.Time
-	SourceDigest uint64
-
-	GroupMembership map[string][]string // identity key -> group keys
-	GroupMembers    map[string][]string // group key -> identity keys
-}
-
-type CachedIdentity struct {
-	Data         source.Identity
-	Hash         uint64
-	LastModified time.Time
-	Version      int64
-
-	AffectedByGroups []string
-}
-
-type CachedGroup struct {
-	Data         source.Group
-	Hash         uint64
-	LastModified time.Time
-	Version      int64
-
-	AffectsIdentities []string
-}
-
 type Cache struct {
 	etcd     *store.EtcdStore
 	logger   *zap.Logger
@@ -56,199 +25,25 @@ type Cache struct {
 	previous *Snapshot
 	version  int64
 	mu       sync.RWMutex
-
 	cacheKey string
 }
 
 func NewCache(etcd *store.EtcdStore, cacheKey string, logger *zap.Logger) *Cache {
-	s := &Cache{
+	return &Cache{
 		etcd:     etcd,
 		logger:   logger,
 		cacheKey: cacheKey,
-		current: &Snapshot{
-			Identities:      make(map[string]*CachedIdentity),
-			Groups:          make(map[string]*CachedGroup),
-			GroupMembership: make(map[string][]string),
-			GroupMembers:    make(map[string][]string),
-			Version:         0,
-			CapturedAt:      time.Time{},
-		},
-		version: 0,
-	}
-
-	return s
-}
-
-func (s *Cache) LoadFromEtcd(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := fmt.Sprintf("%s/%s/current", snapshotPrefix, s.cacheKey)
-	resp, err := s.etcd.Client().Get(ctx, key)
-	if err != nil {
-		return fmt.Errorf("failed to load snapshot: %w", err)
-	}
-
-	if len(resp.Kvs) == 0 {
-		s.logger.Info("No existing snapshot found in etcd")
-		return nil
-	}
-
-	var snapshot Snapshot
-	if err := json.Unmarshal(resp.Kvs[0].Value, &snapshot); err != nil {
-		return fmt.Errorf("failed to unmarshal snapshot: %w", err)
-	}
-
-	s.current = &snapshot
-	s.version = snapshot.Version
-
-	s.logger.Info("Loaded snapshot from etcd",
-		zap.String("cache_key", s.cacheKey),
-		zap.Int64("version", s.version),
-		zap.Int("identities", len(s.current.Identities)),
-		zap.Int("groups", len(s.current.Groups)))
-
-	return nil
-}
-
-func (s *Cache) WatchSnapshots(ctx context.Context) {
-	key := fmt.Sprintf("%s/%s/current", snapshotPrefix, s.cacheKey)
-
-	// Get current revision
-	resp, err := s.etcd.Client().Get(ctx, key)
-	if err != nil {
-		s.logger.Error("Failed to get current revision", zap.Error(err))
-		return
-	}
-
-	rev := resp.Header.Revision + 1
-
-	wch := s.etcd.Client().Watch(ctx, key, clientv3.WithRev(rev))
-
-	for {
-		select {
-		case <-ctx.Done():
-			s.logger.Info("Stopping cache watch",
-				zap.String("cache_key", s.cacheKey))
-			return
-		case resp := <-wch:
-			if resp.Canceled {
-				s.logger.Error("Cache watch canceled",
-					zap.String("cache_key", s.cacheKey),
-					zap.Error(resp.Err()))
-				return
-			}
-
-			for _, ev := range resp.Events {
-				if ev.Type == clientv3.EventTypePut {
-					var snapshot Snapshot
-					if err := json.Unmarshal(ev.Kv.Value, &snapshot); err != nil {
-						s.logger.Error("Failed to unmarshal watched snapshot",
-							zap.Error(err))
-						continue
-					}
-
-					s.mu.Lock()
-					// Only update if the watched version is newer
-					if snapshot.Version > s.current.Version {
-						s.previous = s.current
-						s.current = &snapshot
-						s.version = snapshot.Version
-
-						s.logger.Info("Updated cache from watch",
-							zap.String("cache_key", s.cacheKey),
-							zap.Int64("version", s.version))
-					}
-					s.mu.Unlock()
-				}
-			}
-		}
+		current:  newEmptySnapshot(),
+		version:  0,
 	}
 }
 
-func ComputeHash(data any) (uint64, error) {
-	h := xxhash.New()
-
-	switch v := data.(type) {
-	case source.Identity:
-		h.WriteString(v.UID)
-		h.WriteString(v.Username)
-		h.WriteString(v.Email)
-		h.WriteString(v.DisplayName)
-		if v.Disabled {
-			h.WriteString("disabled")
-		}
-		for _, g := range v.Groups {
-			h.WriteString(g)
-		}
-		for k, val := range v.Attributes {
-			h.WriteString(k)
-			if s, ok := val.(string); ok {
-				h.WriteString(s)
-			}
-		}
-	case source.Group:
-		h.WriteString(v.GID)
-		h.WriteString(v.Name)
-		h.WriteString(v.Description)
-		for _, m := range v.Members {
-			h.WriteString(m)
-		}
-		for k, val := range v.Attributes {
-			h.WriteString(k)
-			if s, ok := val.(string); ok {
-				h.WriteString(s)
-			}
-		}
-	}
-
-	return h.Sum64(), nil
+func (s *Cache) etcdKey() string {
+	return fmt.Sprintf("%s/%s/current", snapshotPrefix, s.cacheKey)
 }
 
-type Diff struct {
-	IdentitiesToCreate []*source.Identity
-	IdentitiesToUpdate []*source.Identity
-	IdentitiesToDelete []*source.Identity
-	GroupsToCreate     []*source.Group
-	GroupsToUpdate     []*source.Group
-	GroupsToDelete     []*source.Group
-
-	IdentitiesToReprocess []*source.Identity
-
-	HasChanges    bool
-	TotalChanges  int
-	SnapshotDelta int64
-
-	AffectedByGroupChanges bool
-}
-
-func buildDependencyGraph(
-	identities map[string]*CachedIdentity,
-	groups map[string]*CachedGroup,
-) (map[string][]string, map[string][]string) {
-	groupMembership := make(map[string][]string) // identity -> groups
-	groupMembers := make(map[string][]string)    // group -> identities
-
-	for identityKey, cached := range identities {
-		validGroups := make([]string, 0, len(cached.Data.Groups))
-
-		for _, groupKey := range cached.Data.Groups {
-			if _, exists := groups[groupKey]; !exists {
-				// Skip orphaned group reference
-				continue
-			}
-
-			validGroups = append(validGroups, groupKey)
-
-			groupMembers[groupKey] = append(groupMembers[groupKey], identityKey)
-		}
-
-		if len(validGroups) > 0 {
-			groupMembership[identityKey] = validGroups
-		}
-	}
-
-	return groupMembership, groupMembers
+func (s *Cache) lockKey() string {
+	return fmt.Sprintf("%s/%s", lockPrefix, s.cacheKey)
 }
 
 func (s *Cache) UpdateSnapshot(
@@ -256,41 +51,55 @@ func (s *Cache) UpdateSnapshot(
 	identities map[string]source.Identity,
 	groups map[string]source.Group,
 ) (*Diff, error) {
+	return s.withLock(ctx, func() (*Diff, error) {
+		return s.updateSnapshotLocked(identities, groups, false)
+	})
+}
+
+func (s *Cache) UpdateSnapshotIncremental(
+	ctx context.Context,
+	changedIdentities map[string]source.Identity,
+	changedGroups map[string]source.Group,
+) (*Diff, error) {
+	return s.withLock(ctx, func() (*Diff, error) {
+		return s.updateSnapshotLocked(changedIdentities, changedGroups, true)
+	})
+}
+
+func (s *Cache) withLock(ctx context.Context, fn func() (*Diff, error)) (*Diff, error) {
 	session, err := concurrency.NewSession(s.etcd.Client(), concurrency.WithTTL(10))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 	defer session.Close()
 
-	lockKey := fmt.Sprintf("%s/%s", lockPrefix, s.cacheKey)
-	mutex := concurrency.NewMutex(session, lockKey)
-
+	mutex := concurrency.NewMutex(session, s.lockKey())
 	if err := mutex.Lock(ctx); err != nil {
 		return nil, fmt.Errorf("failed to acquire lock: %w", err)
 	}
 	defer mutex.Unlock(ctx)
 
-	// Load latest from etcd before updating
 	if err := s.LoadFromEtcd(ctx); err != nil {
-		s.logger.Warn("Failed to reload from etcd before update",
-			zap.Error(err))
+		s.logger.Warn("Failed to reload from etcd before update", zap.Error(err))
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return fn()
+}
+
+func (s *Cache) updateSnapshotLocked(
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
+	incremental bool,
+) (*Diff, error) {
 	now := time.Now()
 	s.version++
 
-	newSnapshot := &Snapshot{
-		Identities:      make(map[string]*CachedIdentity, len(identities)),
-		Groups:          make(map[string]*CachedGroup, len(groups)),
-		GroupMembership: make(map[string][]string),
-		GroupMembers:    make(map[string][]string),
-		Version:         s.version,
-		CapturedAt:      now,
-		SourceDigest:    0,
-	}
+	newSnapshot := s.prepareSnapshot(incremental)
+	newSnapshot.Version = s.version
+	newSnapshot.CapturedAt = now
 
 	diff := &Diff{
 		IdentitiesToCreate:    make([]*source.Identity, 0),
@@ -302,20 +111,63 @@ func (s *Cache) UpdateSnapshot(
 		IdentitiesToReprocess: make([]*source.Identity, 0),
 	}
 
-	seenIdentities := make(map[string]bool, len(identities))
-	seenGroups := make(map[string]bool, len(groups))
-	changedGroups := make(map[string]bool) // Track which groups changed
+	changedGroups := s.processGroups(newSnapshot, groups, now, diff)
+	s.processIdentities(newSnapshot, identities, changedGroups, now, diff, incremental)
 
-	// PHASE 1: Process groups first (they may affect identities)
-	for key, group := range groups {
-		seenGroups[key] = true
+	if !incremental {
+		s.detectDeletedGroups(groups, diff)
+		s.detectDeletedIdentities(identities, diff)
+	}
 
-		hash, err := ComputeHash(group)
-		if err != nil {
-			return nil, err
+	s.finalizeSnapshot(newSnapshot)
+	diff.SnapshotDelta = s.version - s.current.Version
+	diff.finalize()
+
+	s.previous = s.current
+	s.current = newSnapshot
+
+	if err := s.saveToEtcdUnlocked(context.Background()); err != nil {
+		return nil, fmt.Errorf("failed to save snapshot to etcd: %w", err)
+	}
+
+	return diff, nil
+}
+
+func (s *Cache) prepareSnapshot(incremental bool) *Snapshot {
+	if !incremental {
+		return &Snapshot{
+			Identities:      make(map[string]*CachedIdentity),
+			Groups:          make(map[string]*CachedGroup),
+			GroupMembership: make(map[string][]string),
+			GroupMembers:    make(map[string][]string),
 		}
+	}
 
-		newSnapshot.Groups[key] = &CachedGroup{
+	snapshot := &Snapshot{
+		Identities:      make(map[string]*CachedIdentity, len(s.current.Identities)),
+		Groups:          make(map[string]*CachedGroup, len(s.current.Groups)),
+		GroupMembership: make(map[string][]string),
+		GroupMembers:    make(map[string][]string),
+	}
+
+	maps.Copy(snapshot.Identities, s.current.Identities)
+	maps.Copy(snapshot.Groups, s.current.Groups)
+
+	return snapshot
+}
+
+func (s *Cache) processGroups(
+	snapshot *Snapshot,
+	groups map[string]source.Group,
+	now time.Time,
+	diff *Diff,
+) map[string]bool {
+	changedGroups := make(map[string]bool)
+
+	for key, group := range groups {
+		hash, _ := ComputeHash(group)
+
+		cached := &CachedGroup{
 			Data:              group,
 			Hash:              hash,
 			LastModified:      now,
@@ -323,39 +175,39 @@ func (s *Cache) UpdateSnapshot(
 			AffectsIdentities: make([]string, 0),
 		}
 
-		if cached, exists := s.current.Groups[key]; exists {
-			if cached.Hash != hash {
-				// Group was modified
+		if existing, exists := snapshot.Groups[key]; exists {
+			if existing.Hash != hash {
 				groupCopy := group
 				diff.GroupsToUpdate = append(diff.GroupsToUpdate, &groupCopy)
 				changedGroups[key] = true
 			}
 		} else {
-			// New group
 			groupCopy := group
 			diff.GroupsToCreate = append(diff.GroupsToCreate, &groupCopy)
 			changedGroups[key] = true
 		}
+
+		snapshot.Groups[key] = cached
 	}
 
-	// Detect deleted groups
-	for key, cached := range s.current.Groups {
-		if !seenGroups[key] {
-			diff.GroupsToDelete = append(diff.GroupsToDelete, &cached.Data)
-			changedGroups[key] = true
-		}
-	}
+	return changedGroups
+}
 
-	// PHASE 2: Process identities
+func (s *Cache) processIdentities(
+	snapshot *Snapshot,
+	identities map[string]source.Identity,
+	changedGroups map[string]bool,
+	now time.Time,
+	diff *Diff,
+	incremental bool,
+) {
+	processedIdentities := make(map[string]bool)
+
 	for key, identity := range identities {
-		seenIdentities[key] = true
+		processedIdentities[key] = true
+		hash, _ := ComputeHash(identity)
 
-		hash, err := ComputeHash(identity)
-		if err != nil {
-			return nil, err
-		}
-
-		newSnapshot.Identities[key] = &CachedIdentity{
+		cached := &CachedIdentity{
 			Data:             identity,
 			Hash:             hash,
 			LastModified:     now,
@@ -363,124 +215,109 @@ func (s *Cache) UpdateSnapshot(
 			AffectedByGroups: identity.Groups,
 		}
 
-		if cached, exists := s.current.Identities[key]; exists {
-			if cached.Hash != hash {
-				// Identity was directly modified
+		if existing, exists := snapshot.Identities[key]; exists {
+			if existing.Hash != hash {
 				identityCopy := identity
 				diff.IdentitiesToUpdate = append(diff.IdentitiesToUpdate, &identityCopy)
-			} else {
-				// Identity unchanged, but check if any of its groups changed
-				identityAffected := false
-				for _, groupKey := range identity.Groups {
-					if changedGroups[groupKey] {
-						identityAffected = true
-						break
-					}
-				}
-
-				// Also check if identity's group membership changed
-				oldGroups := make(map[string]bool)
-				for _, g := range cached.Data.Groups {
-					oldGroups[g] = true
-				}
-
-				newGroups := make(map[string]bool)
-				for _, g := range identity.Groups {
-					newGroups[g] = true
-				}
-
-				membershipChanged := len(oldGroups) != len(newGroups)
-				if !membershipChanged {
-					for g := range oldGroups {
-						if !newGroups[g] {
-							membershipChanged = true
-							break
-						}
-					}
-				}
-
-				if identityAffected || membershipChanged {
-					// Identity needs reprocessing due to group changes
-					identityCopy := identity
-					diff.IdentitiesToReprocess = append(
-						diff.IdentitiesToReprocess,
-						&identityCopy,
-					)
-					diff.AffectedByGroupChanges = true
-				}
+			} else if s.isIdentityAffectedByGroupChanges(identity, existing.Data, changedGroups) {
+				identityCopy := identity
+				diff.IdentitiesToReprocess = append(diff.IdentitiesToReprocess, &identityCopy)
+				diff.AffectedByGroupChanges = true
 			}
 		} else {
-			// New identity
 			identityCopy := identity
 			diff.IdentitiesToCreate = append(diff.IdentitiesToCreate, &identityCopy)
 		}
+
+		snapshot.Identities[key] = cached
 	}
 
-	// Detect deleted identities
-	for key, cached := range s.current.Identities {
-		if !seenIdentities[key] {
-			diff.IdentitiesToDelete = append(diff.IdentitiesToDelete, &cached.Data)
+	if incremental && len(changedGroups) > 0 {
+		for key, cached := range snapshot.Identities {
+			if processedIdentities[key] {
+				continue
+			}
+
+			for _, groupKey := range cached.Data.Groups {
+				if changedGroups[groupKey] {
+					identityCopy := cached.Data
+					diff.IdentitiesToReprocess = append(diff.IdentitiesToReprocess, &identityCopy)
+					diff.AffectedByGroupChanges = true
+					break
+				}
+			}
+		}
+	}
+}
+
+func (s *Cache) isIdentityAffectedByGroupChanges(
+	newIdentity, oldIdentity source.Identity,
+	changedGroups map[string]bool,
+) bool {
+	for _, groupKey := range newIdentity.Groups {
+		if changedGroups[groupKey] {
+			return true
 		}
 	}
 
-	// PHASE 3: Build dependency graph
-	newSnapshot.GroupMembership, newSnapshot.GroupMembers = buildDependencyGraph(
-		newSnapshot.Identities,
-		newSnapshot.Groups,
+	oldGroups := make(map[string]bool)
+	for _, g := range oldIdentity.Groups {
+		oldGroups[g] = true
+	}
+
+	newGroups := make(map[string]bool)
+	for _, g := range newIdentity.Groups {
+		newGroups[g] = true
+	}
+
+	if len(oldGroups) != len(newGroups) {
+		return true
+	}
+
+	for g := range oldGroups {
+		if !newGroups[g] {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *Cache) detectDeletedGroups(
+	groups map[string]source.Group,
+	diff *Diff,
+) {
+	for key, cached := range s.current.Groups {
+		if _, exists := groups[key]; !exists {
+			diff.GroupsToDelete = append(diff.GroupsToDelete, &cached.Data)
+		}
+	}
+}
+
+func (s *Cache) detectDeletedIdentities(
+	identities map[string]source.Identity,
+	diff *Diff,
+) {
+	for key, cached := range s.current.Identities {
+		if _, exists := identities[key]; !exists {
+			diff.IdentitiesToDelete = append(diff.IdentitiesToDelete, &cached.Data)
+		}
+	}
+}
+
+func (s *Cache) finalizeSnapshot(snapshot *Snapshot) {
+	snapshot.GroupMembership, snapshot.GroupMembers = buildDependencyGraph(
+		snapshot.Identities,
+		snapshot.Groups,
 	)
 
-	for groupKey, identityKeys := range newSnapshot.GroupMembers {
-		if group, ok := newSnapshot.Groups[groupKey]; ok {
+	for groupKey, identityKeys := range snapshot.GroupMembers {
+		if group, ok := snapshot.Groups[groupKey]; ok {
 			group.AffectsIdentities = identityKeys
 		}
 	}
 
-	// Compute overall snapshot digest
-	digestHash := xxhash.New()
-	for _, cached := range newSnapshot.Identities {
-		digestHash.Write([]byte{byte(cached.Hash)})
-	}
-	for _, cached := range newSnapshot.Groups {
-		digestHash.Write([]byte{byte(cached.Hash)})
-	}
-	newSnapshot.SourceDigest = digestHash.Sum64()
-
-	// Update diff metadata
-	diff.TotalChanges = len(diff.IdentitiesToCreate) +
-		len(diff.IdentitiesToUpdate) +
-		len(diff.IdentitiesToDelete) +
-		len(diff.GroupsToCreate) +
-		len(diff.GroupsToUpdate) +
-		len(diff.GroupsToDelete) +
-		len(diff.IdentitiesToReprocess)
-
-	diff.HasChanges = diff.TotalChanges > 0
-	diff.SnapshotDelta = s.version - s.current.Version
-
-	// Rotate snapshots
-	s.previous = s.current
-	s.current = newSnapshot
-
-	if err := s.saveToEtcdUnlocked(ctx); err != nil {
-		return nil, fmt.Errorf("failed to save snapshot to etcd: %w", err)
-	}
-
-	return diff, nil
-}
-
-func (s *Cache) saveToEtcdUnlocked(ctx context.Context) error {
-	data, err := json.Marshal(s.current)
-	if err != nil {
-		return fmt.Errorf("failed to marshal snapshot: %w", err)
-	}
-
-	key := fmt.Sprintf("%s/%s/current", snapshotPrefix, s.cacheKey)
-	_, err = s.etcd.Client().Put(ctx, key, string(data))
-	if err != nil {
-		return fmt.Errorf("failed to save snapshot: %w", err)
-	}
-
-	return nil
+	snapshot.SourceDigest = computeSnapshotDigest(snapshot)
 }
 
 func (s *Cache) GetCurrentVersion() int64 {
@@ -517,9 +354,7 @@ func (s *Cache) Clear(ctx context.Context) error {
 	}
 	defer session.Close()
 
-	lockKey := fmt.Sprintf("%s/%s", lockPrefix, s.cacheKey)
-	mutex := concurrency.NewMutex(session, lockKey)
-
+	mutex := concurrency.NewMutex(session, s.lockKey())
 	if err := mutex.Lock(ctx); err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
@@ -528,19 +363,11 @@ func (s *Cache) Clear(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.current = &Snapshot{
-		Identities:      make(map[string]*CachedIdentity),
-		Groups:          make(map[string]*CachedGroup),
-		GroupMembership: make(map[string][]string),
-		GroupMembers:    make(map[string][]string),
-		Version:         0,
-		CapturedAt:      time.Time{},
-	}
+	s.current = newEmptySnapshot()
 	s.previous = nil
 	s.version = 0
 
-	key := fmt.Sprintf("%s/%s/current", snapshotPrefix, s.cacheKey)
-	_, err = s.etcd.Client().Delete(ctx, key)
+	_, err = s.etcd.Client().Delete(ctx, s.etcdKey())
 	if err != nil {
 		return fmt.Errorf("failed to delete snapshot from etcd: %w", err)
 	}

@@ -11,6 +11,18 @@ import (
 	"go.uber.org/zap"
 )
 
+type FetchType int
+
+const (
+	Incremental FetchType = iota
+	Full
+)
+
+var fetchTypeName = map[FetchType]string{
+	Incremental: "incremental",
+	Full:        "full",
+}
+
 func (m *Manager) reconcile(targetName string) error {
 	target, ok := m.activeOperators.Load(targetName)
 	if !ok {
@@ -42,7 +54,7 @@ func (m *Manager) reconcile(targetName string) error {
 	// Try incremental fetch if source supports it
 	var identities map[string]source.Identity
 	var groups map[string]source.Group
-	var fetchType string
+	fetchType := Full
 
 	if canDoIncremental {
 		if detector, ok := src.Source.(source.ChangeDetector); ok && detector.SupportsChangeDetection() {
@@ -50,9 +62,41 @@ func (m *Manager) reconcile(targetName string) error {
 			changes, _, err := detector.GetChangesSince(m.shutdownCtx, snapshot.CapturedAt)
 
 			if err == nil && !changes.FullSync {
-				// Successfully got incremental changes
-				identities, groups = m.applyChangesToSnapshot(sourceCache, changes)
-				fetchType = "incremental"
+				// Successfully got incremental changes - get ONLY the changes
+				identities = make(map[string]source.Identity)
+				groups = make(map[string]source.Group)
+
+				for _, identity := range changes.ModifiedIdentities {
+					key := identityKey(identity)
+					identities[key] = identity
+				}
+
+				for _, group := range changes.ModifiedGroups {
+					key := groupKey(group)
+					groups[key] = group
+				}
+
+				// Also need to include deleted items for proper diff calculation
+				for _, uid := range changes.DeletedIdentities {
+					// Mark as deleted by checking if it exists in snapshot
+					if cachedIdentity, exists := snapshot.Identities[uid]; exists {
+						deletedIdentity := cachedIdentity.Data
+						deletedIdentity.Deleted = true
+						identities[uid] = deletedIdentity
+					}
+				}
+
+				for _, gid := range changes.DeletedGroups {
+					if cachedGroup, exists := snapshot.Groups[gid]; exists {
+						deletedGroup := cachedGroup.Data
+						deletedGroup.Deleted = true
+						groups[gid] = deletedGroup
+					}
+				}
+
+				fetchType = Incremental
+
+				_, _ = m.applyChangesToSnapshot(sourceCache, changes)
 
 				m.logger.Info(
 					"Fetched incremental changes from source",
@@ -75,8 +119,7 @@ func (m *Manager) reconcile(targetName string) error {
 	}
 
 	// Full fetch if incremental not available
-	if !canDoIncremental || identities == nil {
-		fetchType = "full"
+	if fetchType != Incremental {
 		identities, err = src.GetIdentities(m.shutdownCtx)
 		if err != nil {
 			return fmt.Errorf("failed to get identities: %w", err)
@@ -90,7 +133,7 @@ func (m *Manager) reconcile(targetName string) error {
 		m.logger.Info(
 			"Fetched full data from source",
 			zap.String("target", targetName),
-			zap.String("fetch_type", fetchType),
+			zap.String("fetch_type", fetchTypeName[fetchType]),
 			zap.Int("identities", len(identities)),
 			zap.Int("groups", len(groups)),
 		)
@@ -106,13 +149,12 @@ func (m *Manager) reconcile(targetName string) error {
 		return fmt.Errorf("failed to apply transformations: %w", err)
 	}
 
-	diff, err := targetCache.UpdateSnapshot(m.shutdownCtx, transformedIdentities, transformedGroups)
-	if err != nil {
-		return fmt.Errorf("failed to compute diff: %w", err)
-	}
+	var diff *cache.Diff
+	if fetchType == Incremental {
+		diff, err = targetCache.UpdateSnapshotIncremental(m.shutdownCtx, transformedIdentities, transformedGroups)
+	} else {
+		diff, err = targetCache.UpdateSnapshot(m.shutdownCtx, transformedIdentities, transformedGroups)
 
-	// Update source cache
-	if fetchType == "full" {
 		_, err = sourceCache.UpdateSnapshot(m.shutdownCtx, identities, groups)
 		if err != nil {
 			m.logger.Warn(
@@ -123,10 +165,14 @@ func (m *Manager) reconcile(targetName string) error {
 		}
 	}
 
+	if err != nil {
+		return fmt.Errorf("failed to compute diff: %w", err)
+	}
+
 	m.logger.Info(
 		"Computed changes",
 		zap.String("target", targetName),
-		zap.String("fetch_type", fetchType),
+		zap.String("fetch_type", fetchTypeName[fetchType]),
 		zap.Int("identities_to_create", len(diff.IdentitiesToCreate)),
 		zap.Int("identities_to_update", len(diff.IdentitiesToUpdate)),
 		zap.Int("identities_to_delete", len(diff.IdentitiesToDelete)),
@@ -157,7 +203,7 @@ func (m *Manager) reconcile(targetName string) error {
 	// Perform sync - use incremental if operator supports it
 	var result *operator.SyncResult
 
-	if incrementalOp, ok := target.Operator.(operator.IncrementalOperator); ok && incrementalOp.SupportsIncrementalSync() {
+	if incrementalOp, ok := target.Operator.(operator.IncrementalOperator); ok && incrementalOp.SupportsIncrementalSync() && fetchType == Incremental {
 		incrementalState := &operator.IncrementalSyncState{
 			IdentitiesToCreate:    toIdentitySlice(diff.IdentitiesToCreate),
 			IdentitiesToUpdate:    toIdentitySlice(diff.IdentitiesToUpdate),
@@ -218,7 +264,7 @@ func (m *Manager) reconcile(targetName string) error {
 		"Reconciliation completed",
 		zap.String("target", targetName),
 		zap.Duration("duration", time.Since(startTime)),
-		zap.String("fetch_type", fetchType),
+		zap.String("fetch_type", fetchTypeName[fetchType]),
 		zap.Uint64("identities_created", result.IdentitiesCreated.Load()),
 		zap.Uint64("identities_updated", result.IdentitiesUpdated.Load()),
 		zap.Uint64("identities_deleted", result.IdentitiesDeleted.Load()),

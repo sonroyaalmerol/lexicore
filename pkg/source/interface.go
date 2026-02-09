@@ -18,6 +18,7 @@ type Identity struct {
 	Attributes  map[string]any
 	DisplayName string
 	Disabled    bool
+	Deleted     bool
 }
 
 type Group struct {
@@ -26,6 +27,7 @@ type Group struct {
 	Members     []string
 	Attributes  map[string]any
 	Description string
+	Deleted     bool
 }
 
 type Changes struct {
