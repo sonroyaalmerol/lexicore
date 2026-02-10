@@ -1,7 +1,6 @@
 package iredadmin
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -53,26 +52,6 @@ func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 				u.MailQuota = []string{vString}
 			case AttributeStatus:
 				u.AccountStatus = []string{vString}
-			case AttributeForwardingAddresses:
-				err := json.Unmarshal([]byte(vString), &u.MailForwardingAddress)
-				if err != nil {
-					u.MailForwardingAddress = []string{vString}
-				}
-			case AttributeEnabledServices:
-				err := json.Unmarshal([]byte(vString), &u.EnabledService)
-				if err != nil {
-					u.EnabledService = []string{vString}
-				}
-			case AttributeMailingLists:
-				err := json.Unmarshal([]byte(vString), &u.MailingLists)
-				if err != nil {
-					u.MailingLists = []string{vString}
-				}
-			case AttributeAliases:
-				err := json.Unmarshal([]byte(vString), &u.MailingAliases)
-				if err != nil {
-					u.MailingAliases = []string{vString}
-				}
 			}
 		}
 		if vStrArray, ok := v.([]string); ok {
