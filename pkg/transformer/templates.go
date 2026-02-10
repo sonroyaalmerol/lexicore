@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"html/template"
 
@@ -28,7 +29,12 @@ func NewTemplateTransformer(config map[string]any) (*TemplateTransformer, error)
 			continue
 		}
 
-		tmpl, err := template.New(key).Parse(str)
+		tmpl, err := template.New(key).Funcs(template.FuncMap{
+			"json": func(v any) (string, error) {
+				b, err := json.Marshal(v)
+				return string(b), err
+			},
+		}).Parse(str)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", key, err)
 		}

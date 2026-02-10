@@ -52,17 +52,7 @@ func (s *Cache) UpdateSnapshot(
 	groups map[string]source.Group,
 ) (*Diff, error) {
 	return s.withLock(ctx, func() (*Diff, error) {
-		return s.updateSnapshotLocked(identities, groups, false)
-	})
-}
-
-func (s *Cache) UpdateSnapshotIncremental(
-	ctx context.Context,
-	changedIdentities map[string]source.Identity,
-	changedGroups map[string]source.Group,
-) (*Diff, error) {
-	return s.withLock(ctx, func() (*Diff, error) {
-		return s.updateSnapshotLocked(changedIdentities, changedGroups, true)
+		return s.updateSnapshotLocked(identities, groups)
 	})
 }
 
@@ -92,12 +82,11 @@ func (s *Cache) withLock(ctx context.Context, fn func() (*Diff, error)) (*Diff, 
 func (s *Cache) updateSnapshotLocked(
 	identities map[string]source.Identity,
 	groups map[string]source.Group,
-	incremental bool,
 ) (*Diff, error) {
 	now := time.Now()
 	s.version++
 
-	newSnapshot := s.prepareSnapshot(incremental)
+	newSnapshot := s.prepareSnapshot()
 	newSnapshot.Version = s.version
 	newSnapshot.CapturedAt = now
 
@@ -112,13 +101,9 @@ func (s *Cache) updateSnapshotLocked(
 	}
 
 	changedGroups := s.processGroups(newSnapshot, groups, now, diff)
-	s.processIdentities(newSnapshot, identities, changedGroups, now, diff, incremental)
-
-	if !incremental {
-		s.detectDeletedGroups(groups, diff)
-		s.detectDeletedIdentities(identities, diff)
-	}
-
+	s.processIdentities(newSnapshot, identities, changedGroups, now, diff)
+	s.detectDeletedGroups(groups, diff)
+	s.detectDeletedIdentities(identities, diff)
 	s.finalizeSnapshot(newSnapshot)
 	diff.SnapshotDelta = s.version - s.current.Version
 	diff.finalize()
@@ -133,16 +118,7 @@ func (s *Cache) updateSnapshotLocked(
 	return diff, nil
 }
 
-func (s *Cache) prepareSnapshot(incremental bool) *Snapshot {
-	if !incremental {
-		return &Snapshot{
-			Identities:      make(map[string]*CachedIdentity),
-			Groups:          make(map[string]*CachedGroup),
-			GroupMembership: make(map[string][]string),
-			GroupMembers:    make(map[string][]string),
-		}
-	}
-
+func (s *Cache) prepareSnapshot() *Snapshot {
 	snapshot := &Snapshot{
 		Identities:      make(map[string]*CachedIdentity, len(s.current.Identities)),
 		Groups:          make(map[string]*CachedGroup, len(s.current.Groups)),
@@ -199,7 +175,6 @@ func (s *Cache) processIdentities(
 	changedGroups map[string]bool,
 	now time.Time,
 	diff *Diff,
-	incremental bool,
 ) {
 	processedIdentities := make(map[string]bool)
 
@@ -230,23 +205,6 @@ func (s *Cache) processIdentities(
 		}
 
 		snapshot.Identities[key] = cached
-	}
-
-	if incremental && len(changedGroups) > 0 {
-		for key, cached := range snapshot.Identities {
-			if processedIdentities[key] {
-				continue
-			}
-
-			for _, groupKey := range cached.Data.Groups {
-				if changedGroups[groupKey] {
-					identityCopy := cached.Data
-					diff.IdentitiesToReprocess = append(diff.IdentitiesToReprocess, &identityCopy)
-					diff.AffectedByGroupChanges = true
-					break
-				}
-			}
-		}
 	}
 }
 

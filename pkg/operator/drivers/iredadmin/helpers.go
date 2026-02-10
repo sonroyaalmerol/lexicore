@@ -1,100 +1,25 @@
 package iredadmin
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/url"
+	"strconv"
 	"strings"
+
+	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
-func (o *IRedAdminOperator) getFieldValue(
-	userData *UserData,
-	fieldName string,
-) string {
-	switch fieldName {
-	case "cn":
-		if len(userData.CN) > 0 {
-			return userData.CN[0]
-		}
-	case "givenName":
-		if len(userData.GivenName) > 0 {
-			return userData.GivenName[0]
-		}
-	case "sn":
-		if len(userData.SN) > 0 {
-			return userData.SN[0]
-		}
-	case "preferredLanguage":
-		if len(userData.PreferredLanguage) > 0 {
-			return userData.PreferredLanguage[0]
-		}
-	case "mailQuota":
-		if len(userData.MailQuota) > 0 {
-			return userData.MailQuota[0]
-		}
-	case "accountStatus":
-		if len(userData.AccountStatus) > 0 {
-			return userData.AccountStatus[0]
-		}
-	case "title":
-		if len(userData.Title) > 0 {
-			return userData.Title[0]
-		}
+func (o *IRedAdminOperator) GetAttributePrefix() string {
+	if o.attrPrefix != nil {
+		return *o.attrPrefix
 	}
+
+	if prefix, err := o.BaseOperator.GetStringConfig("attributePrefix"); err == nil {
+		o.attrPrefix = &prefix
+		return prefix
+	}
+
 	return ""
 }
-
-func (o *IRedAdminOperator) execPost(
-	ctx context.Context,
-	url string,
-	data url.Values,
-) error {
-	if err := o.limiter.Wait(ctx); err != nil {
-		return err
-	}
-
-	resp, err := o.Client.PostForm(url, data)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return o.checkResponse(resp)
-}
-
-func (o *IRedAdminOperator) checkResponse(resp *http.Response) error {
-	var apiResp APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to parse iRedAdmin response: %s", body)
-	}
-
-	if !apiResp.Success {
-		return fmt.Errorf("iredadmin error: %s", apiResp.Msg)
-	}
-	return nil
-}
-
-func (o *IRedAdminOperator) buildAPIURL(path string) string {
-	var b strings.Builder
-	b.Grow(len(o.baseURL) + len(path))
-	b.WriteString(o.baseURL)
-	b.WriteString(path)
-	return b.String()
-}
-
-func (o *IRedAdminOperator) buildUserURL(email string) string {
-	escaped := url.PathEscape(email)
-	var b strings.Builder
-	b.Grow(len(o.baseURL) + 11 + len(escaped))
-	b.WriteString(o.baseURL)
-	b.WriteString("/api/user/")
-	b.WriteString(escaped)
-	return b.String()
-}
-
 func (o *IRedAdminOperator) getConcurrency() int {
 	workers := 10
 	if w, ok := o.GetConfig("concurrency"); ok {
@@ -105,4 +30,82 @@ func (o *IRedAdminOperator) getConcurrency() int {
 		}
 	}
 	return workers
+}
+
+// manifest to iredadmin userdata
+func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
+	u := UserData{}
+	u.CN = []string{identity.DisplayName}
+	for k, v := range identity.Attributes {
+		fieldName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
+		if !hasPrefix {
+			continue
+		}
+		if vString, ok := v.(string); ok {
+			switch fieldName {
+			case AttributeGivenName:
+				u.GivenName = []string{vString}
+			case AttributeSN:
+				u.SN = []string{vString}
+			case AttributeLanguage:
+				u.PreferredLanguage = []string{vString}
+			case AttributeQuota:
+				u.MailQuota = []string{vString}
+			case AttributeStatus:
+				u.AccountStatus = []string{vString}
+			case AttributeForwardingAddresses:
+				err := json.Unmarshal([]byte(vString), &u.MailForwardingAddress)
+				if err != nil {
+					u.MailForwardingAddress = []string{vString}
+				}
+			case AttributeEnabledServices:
+				err := json.Unmarshal([]byte(vString), &u.EnabledService)
+				if err != nil {
+					u.EnabledService = []string{vString}
+				}
+			case AttributeMailingLists:
+				err := json.Unmarshal([]byte(vString), &u.MailingLists)
+				if err != nil {
+					u.MailingLists = []string{vString}
+				}
+			case AttributeAliases:
+				err := json.Unmarshal([]byte(vString), &u.MailingAliases)
+				if err != nil {
+					u.MailingAliases = []string{vString}
+				}
+			}
+		}
+		if vStrArray, ok := v.([]string); ok {
+			switch fieldName {
+			case AttributeForwardingAddresses:
+				u.MailForwardingAddress = vStrArray
+			case AttributeEnabledServices:
+				u.EnabledService = vStrArray
+			case AttributeMailingLists:
+				u.MailingLists = vStrArray
+			case AttributeAliases:
+				u.MailingAliases = vStrArray
+			}
+		}
+		if vInt, ok := v.(int); ok {
+			switch fieldName {
+			case AttributeQuota:
+				u.MailQuota = []string{strconv.Itoa(vInt)}
+			}
+		}
+	}
+
+	return u
+}
+
+func stringIsEqual(a []string, b []string) bool {
+	return getStringFromArray(a) == getStringFromArray(b)
+}
+
+func getStringFromArray(arr []string) string {
+	if len(arr) > 0 {
+		return arr[0]
+	}
+
+	return ""
 }

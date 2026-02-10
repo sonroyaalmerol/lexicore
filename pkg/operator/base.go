@@ -110,7 +110,11 @@ func (b *BaseOperator) applyMapping(
 		}
 
 		if value, ok := group.Attributes[mapping.SourceAttribute]; ok {
-			values = append(values, value)
+			if arrVal, isArr := value.([]any); isArr {
+				values = append(values, arrVal...)
+			} else {
+				values = append(values, value)
+			}
 		}
 	}
 

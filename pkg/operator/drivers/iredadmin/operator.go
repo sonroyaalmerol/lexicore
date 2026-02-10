@@ -12,42 +12,47 @@ import (
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
-	"codeberg.org/lexicore/lexicore/pkg/source"
 	"golang.org/x/time/rate"
 )
 
-type APIResponse struct {
+type APIResponse[T any] struct {
 	Success bool   `json:"_success"`
 	Msg     string `json:"_msg"`
-	Data    any    `json:"_data"`
+	Data    T      `json:"_data"`
 }
 
 type UserData struct {
-	Mail              []string `json:"mail"`
-	UID               []string `json:"uid"`
-	CN                []string `json:"cn"`
-	GivenName         []string `json:"givenName"`
-	SN                []string `json:"sn"`
-	PreferredLanguage []string `json:"preferredLanguage"`
-	MailQuota         []string `json:"mailQuota"`
-	AccountStatus     []string `json:"accountStatus"`
-	Title             []string `json:"title"`
-	EnabledService    []string `json:"enabledService"`
-	ManagedDomains    []string `json:"managed_domains"`
-	MailingAliases    []string `json:"mailing_aliases"`
-	MailingLists      []string `json:"mailing_lists"`
-	StoredBytes       int64    `json:"stored_bytes"`
-	StoredMessages    int      `json:"stored_messages"`
-	LastLogin         string   `json:"last_login"`
-	HomeDirectory     []string `json:"homeDirectory"`
-	ShadowLastChange  []string `json:"shadowLastChange"`
+	Mail                  []string `json:"mail"`
+	UID                   []string `json:"uid"`
+	CN                    []string `json:"cn"`
+	GivenName             []string `json:"givenName"`
+	SN                    []string `json:"sn"`
+	PreferredLanguage     []string `json:"preferredLanguage"`
+	MailQuota             []string `json:"mailQuota"`
+	AccountStatus         []string `json:"accountStatus"`
+	Title                 []string `json:"title"`
+	EnabledService        []string `json:"enabledService"`
+	ManagedDomains        []string `json:"managed_domains"`
+	MailForwardingAddress []string `json:"mailForwardingAddress"`
+	MailingAliases        []string `json:"mailing_aliases"`
+	MailingLists          []string `json:"mailing_lists"`
+	StoredBytes           int64    `json:"stored_bytes"`
+	StoredMessages        int      `json:"stored_messages"`
+	LastLogin             string   `json:"last_login"`
+	HomeDirectory         []string `json:"homeDirectory"`
+	ShadowLastChange      []string `json:"shadowLastChange"`
 }
 
 type IRedAdminOperator struct {
 	*operator.BaseOperator
-	Client  *http.Client
-	baseURL string
-	limiter *rate.Limiter
+	Client          *http.Client
+	baseURL         string
+	limiter         *rate.Limiter
+	domain          string
+	deleteOnDisable bool
+	deleteOnDelete  bool
+	attrPrefix      *string
+	keepMailboxDays int
 }
 
 func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]any) error {
@@ -58,6 +63,7 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 
 	apiURL, _ := o.GetStringConfig("url")
 	o.baseURL = strings.TrimSuffix(apiURL, "/")
+	o.domain, _ = o.GetStringConfig("domain")
 
 	jar, _ := cookiejar.New(nil)
 
@@ -65,6 +71,27 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 	if rl, ok := o.GetConfig("rateLimit"); ok {
 		if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
 			rateLimit = rlFloat
+		}
+	}
+
+	o.deleteOnDisable = false
+	if rl, ok := o.GetConfig("deleteOnDisable"); ok {
+		if isDelete, ok := rl.(bool); ok && isDelete {
+			o.deleteOnDisable = isDelete
+		}
+	}
+
+	o.deleteOnDelete = false
+	if rl, ok := o.GetConfig("deleteOnDelete"); ok {
+		if isDelete, ok := rl.(bool); ok && isDelete {
+			o.deleteOnDelete = isDelete
+		}
+	}
+
+	o.keepMailboxDays = 0
+	if rl, ok := o.GetConfig("keepMailboxDays"); ok {
+		if rlFloat, ok := rl.(int); ok && rlFloat > 0 {
+			o.keepMailboxDays = rlFloat
 		}
 	}
 
@@ -86,7 +113,7 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 }
 
 func (o *IRedAdminOperator) Validate(ctx context.Context) error {
-	required := []string{"url", "username", "password"}
+	required := []string{"url", "username", "password", "domain"}
 	for _, req := range required {
 		if v, _ := o.GetStringConfig(req); v == "" {
 			return fmt.Errorf("iredadmin: '%s' is required", req)
@@ -103,19 +130,17 @@ func (o *IRedAdminOperator) login(ctx context.Context) error {
 	data.Set("username", user)
 	data.Set("password", pass)
 
-	loginURL := o.buildAPIURL("/api/login")
-
 	if err := o.limiter.Wait(ctx); err != nil {
 		return err
 	}
 
-	resp, err := o.Client.PostForm(loginURL, data)
+	resp, err := o.Client.PostForm(fmt.Sprintf("%s/api/login", o.baseURL), data)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	var apiResp APIResponse
+	var apiResp APIResponse[any]
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return fmt.Errorf("failed to parse login response: %w", err)
 	}
@@ -126,47 +151,25 @@ func (o *IRedAdminOperator) login(ctx context.Context) error {
 	return nil
 }
 
-func (o *IRedAdminOperator) SupportsIncrementalSync() bool {
-	return true
-}
-
-func (o *IRedAdminOperator) SyncIncremental(
-	ctx context.Context,
-	state *operator.IncrementalSyncState,
-) (*operator.SyncResult, error) {
-	if err := o.login(ctx); err != nil {
-		return nil, err
-	}
-
-	workers := o.getConcurrency()
-	result := &operator.SyncResult{}
-
-	o.processCreates(ctx, state, result, workers)
-	if ctx.Err() != nil {
-		return result, ctx.Err()
-	}
-
-	o.processUpdates(ctx, state, result, workers)
-	if ctx.Err() != nil {
-		return result, ctx.Err()
-	}
-
-	o.processReprocesses(ctx, state, result, workers)
-	if ctx.Err() != nil {
-		return result, ctx.Err()
-	}
-
-	o.processDeletes(ctx, state, result, workers)
-
-	return result, nil
-}
-
 func (o *IRedAdminOperator) Sync(
 	ctx context.Context,
 	state *operator.SyncState,
 ) (*operator.SyncResult, error) {
 	if err := o.login(ctx); err != nil {
 		return nil, err
+	}
+
+	currentUsers, err := o.getUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	existingUsers := make(map[string]struct{})
+	toDelete := make(map[string]struct{})
+	for _, mail := range currentUsers {
+		existingUsers[mail] = struct{}{}
+		if o.deleteOnDelete {
+			toDelete[mail] = struct{}{}
+		}
 	}
 
 	workers := o.getConcurrency()
@@ -180,6 +183,24 @@ func (o *IRedAdminOperator) Sync(
 			continue
 		}
 
+		if !o.deleteOnDelete {
+			// toDelete is empty
+			if o.deleteOnDisable && id.Disabled {
+				toDelete[id.Email] = struct{}{}
+			}
+		} else {
+			// toDelete contains all existing email users
+			if !o.deleteOnDisable {
+				delete(toDelete, id.Email)
+			} else {
+				if !id.Disabled {
+					delete(toDelete, id.Email)
+				} else {
+					continue
+				}
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			wg.Wait()
@@ -187,122 +208,73 @@ func (o *IRedAdminOperator) Sync(
 		default:
 		}
 
-		wg.Add(1)
-		go func(userID string, identity source.Identity) {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			enriched := o.EnrichIdentity(identity, state.Groups)
+			enriched := o.EnrichIdentity(id, state.Groups)
+			newUserData := o.identityToUser(enriched)
 
-			o.LogInfo("checking user %s (uid: %s)", identity.Email, userID)
+			o.LogInfo("checking user %s (uid: %s)", id.Email, uid)
 
-			userData, err := o.getUserData(ctx, identity.Email)
-			if err != nil {
-				o.LogError(fmt.Errorf("check user %s (uid: %s): %w", identity.Email, userID, err))
-				result.ErrCount.Add(1)
-				return
-			}
-
-			if userData == nil {
+			if _, exists := existingUsers[id.Email]; !exists {
 				if state.DryRun {
-					o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", identity.Email, userID)
+					o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", id.Email, uid)
 					result.IdentitiesCreated.Add(1)
 				} else {
 					if err := o.createUser(ctx, &enriched); err != nil {
-						o.LogError(fmt.Errorf("create user %s (uid: %s): %w", identity.Email, userID, err))
+						o.LogError(fmt.Errorf("create user %s (uid: %s): %w", id.Email, uid, err))
 						result.ErrCount.Add(1)
 					} else {
 						result.IdentitiesCreated.Add(1)
 					}
 				}
 			} else {
-				changes := o.detectChanges(&enriched, userData)
-				if len(changes) > 0 {
-					if state.DryRun {
-						o.LogInfo("[DRY RUN] Would update user %s (uid: %s) - changes: %v",
-							identity.Email, userID, changes)
-						result.IdentitiesUpdated.Add(1)
-					} else {
-						if err := o.updateUser(ctx, &enriched, changes); err != nil {
-							o.LogError(fmt.Errorf("update user %s (uid: %s): %w", identity.Email, userID, err))
-							result.ErrCount.Add(1)
-						} else {
-							result.IdentitiesUpdated.Add(1)
-						}
-					}
+				userData, err := o.getUser(ctx, id.Email)
+				if err != nil {
+					o.LogError(fmt.Errorf("check user %s (uid: %s): %w", id.Email, uid, err))
+					result.ErrCount.Add(1)
+					return
+				}
+
+				if skipped, err := o.updateUser(ctx, &newUserData, userData, state.DryRun); err != nil {
+					o.LogError(fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
+					result.ErrCount.Add(1)
+				} else if !skipped {
+					result.IdentitiesUpdated.Add(1)
 				}
 			}
-		}(uid, id)
+		})
 	}
 
+	for email := range toDelete {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return result, ctx.Err()
+		default:
+		}
+
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if state.DryRun {
+				o.LogInfo("[DRY RUN] Would delete user %s", email)
+				result.IdentitiesDeleted.Add(1)
+			} else {
+				if err := o.deleteUser(ctx, email, o.keepMailboxDays); err != nil {
+					o.LogError(fmt.Errorf("delete user %s: %w", email, err))
+					result.ErrCount.Add(1)
+				} else {
+					result.IdentitiesDeleted.Add(1)
+				}
+			}
+		})
+	}
 	wg.Wait()
 
 	return result, nil
-}
-
-func (o *IRedAdminOperator) getUserData(
-	ctx context.Context,
-	email string,
-) (*UserData, error) {
-	userURL := o.buildUserURL(email)
-
-	if err := o.limiter.Wait(ctx); err != nil {
-		return nil, err
-	}
-
-	resp, err := o.Client.Get(userURL)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var apiResp struct {
-		Success bool      `json:"_success"`
-		Msg     string    `json:"_msg"`
-		Data    *UserData `json:"_data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("failed to parse user data response: %w", err)
-	}
-
-	if !apiResp.Success {
-		return nil, nil
-	}
-
-	return apiResp.Data, nil
-}
-
-func (o *IRedAdminOperator) detectChanges(
-	id *source.Identity,
-	userData *UserData,
-) map[string]string {
-	changes := make(map[string]string)
-
-	cn := id.DisplayName
-	if cn == "" {
-		cn = id.Username
-	}
-	if len(userData.CN) > 0 && userData.CN[0] != cn {
-		changes["cn"] = cn
-	}
-
-	for k, v := range id.Attributes {
-		fieldName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
-		if !hasPrefix {
-			continue
-		}
-
-		newValue := fmt.Sprintf("%v", v)
-		existingValue := o.getFieldValue(userData, fieldName)
-
-		if existingValue != newValue {
-			changes[fieldName] = newValue
-		}
-	}
-
-	return changes
 }
 
 func (o *IRedAdminOperator) Close() error {

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"codeberg.org/lexicore/lexicore/pkg/cache"
 	"codeberg.org/lexicore/lexicore/pkg/config"
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
@@ -30,7 +29,6 @@ type reconcileTask struct {
 type ActiveOperator struct {
 	operator.Operator
 	manifest       *manifest.SyncTarget
-	cache          *cache.Cache
 	lastReconciled time.Time
 	ctx            context.Context
 	closeCtx       context.CancelFunc
@@ -39,7 +37,6 @@ type ActiveOperator struct {
 type ActiveSource struct {
 	source.Source
 	manifest *manifest.IdentitySource
-	cache    *cache.Cache
 	ctx      context.Context
 	closeCtx context.CancelFunc
 }
@@ -195,16 +192,9 @@ func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
 		return fmt.Errorf("failed to initialize source operator: %w", err)
 	}
 
-	cacheStore := cache.NewCache(m.db, fmt.Sprintf("source/%s", src.Name), m.logger)
-	if err := cacheStore.LoadFromEtcd(ctx); err != nil {
-		m.logger.Error("failed to load cache from etcd", zap.Error(err))
-	}
-	go cacheStore.WatchSnapshots(ctx)
-
 	activeSource := &ActiveSource{
 		Source:   opSrc,
 		manifest: src,
-		cache:    cacheStore,
 		ctx:      ctx,
 		closeCtx: cancel,
 	}
@@ -256,16 +246,9 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 		return fmt.Errorf("failed to initialize plugin operator: %w", err)
 	}
 
-	cacheStore := cache.NewCache(m.db, fmt.Sprintf("operator/%s", target.Name), m.logger)
-	if err := cacheStore.LoadFromEtcd(ctx); err != nil {
-		m.logger.Error("failed to load cache from etcd", zap.Error(err))
-	}
-	go cacheStore.WatchSnapshots(ctx)
-
 	activeTarget := &ActiveOperator{
 		Operator:       op,
 		manifest:       target,
-		cache:          cacheStore,
 		lastReconciled: time.Time{}, // Zero value = never reconciled
 		ctx:            ctx,
 		closeCtx:       cancel,
@@ -411,9 +394,6 @@ func (m *Manager) GetIdentitySource(name string) (source.Source, bool) {
 func (m *Manager) RemoveIdentitySource(name string) {
 	op, ok := m.activeSources.LoadAndDelete(name)
 	if ok && op != nil {
-		if op.cache != nil {
-			op.cache.Clear(context.Background())
-		}
 		if op.closeCtx != nil {
 			op.closeCtx()
 		}
@@ -423,9 +403,6 @@ func (m *Manager) RemoveIdentitySource(name string) {
 func (m *Manager) RemoveSyncTarget(name string) {
 	op, ok := m.activeOperators.LoadAndDelete(name)
 	if ok && op != nil {
-		if op.cache != nil {
-			op.cache.Clear(context.Background())
-		}
 		if op.closeCtx != nil {
 			op.closeCtx()
 		}
