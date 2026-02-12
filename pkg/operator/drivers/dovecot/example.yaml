@@ -7,8 +7,13 @@ spec:
   operator: dovecot-acl
   config:
     attributePrefix: "dovecot_"
+    defaultAcls:
+      - "lookup"
+      - "read"
+      - "write"
+      - "write-seen"
     url: "http://dovecot-server:8080/doveadm/v1"
-    api_key: "${DOVECOT_API_KEY}"
+    apiKey: "${DOVECOT_API_KEY}"
   transformers:
     - name: dovecot-metadata
       type: template
@@ -16,4 +21,4 @@ spec:
         templates:
           # This maps to the 'right' parameter in 'acl set'
           # Syntax: "identifier right" (e.g., "user=admin lr")
-          dovecot_acl: "user=admin lrs"
+          acls: "user=admin lrs"

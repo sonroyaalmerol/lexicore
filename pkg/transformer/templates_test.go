@@ -140,7 +140,6 @@ func TestTemplateTransformer_NonStringTemplate(t *testing.T) {
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
 
-	// Should skip non-string templates
 	assert.Len(t, tt.templates, 1)
 	assert.NotNil(t, tt.templates["valid"])
 	assert.Nil(t, tt.templates["number"])
@@ -256,8 +255,8 @@ func TestTemplateTransformer_OverwriteExisting(t *testing.T) {
 func TestTemplateTransformer_ArrayExpansion(t *testing.T) {
 	config := map[string]any{
 		"templates": map[string]any{
-			"groups":      "{{.Attributes.groupList}}",
-			"permissions": "{{.Attributes.perms}}",
+			"groups":      "{{.Attributes.groupList | toJson}}",
+			"permissions": "{{.Attributes.perms | toJson}}",
 			"email":       "{{.Username}}@example.com",
 		},
 	}
@@ -280,13 +279,13 @@ func TestTemplateTransformer_ArrayExpansion(t *testing.T) {
 
 	require.NoError(t, err)
 
-	groups, ok := transformed["john"].Attributes["groups"].([]string)
-	require.True(t, ok, "groups should be []string, got %T", transformed["john"].Attributes["groups"])
-	assert.Equal(t, []string{"admin", "users", "developers"}, groups)
+	groups, ok := transformed["john"].Attributes["groups"].([]any)
+	require.True(t, ok, "groups should be []any, got %T", transformed["john"].Attributes["groups"])
+	assert.Equal(t, []any{"admin", "users", "developers"}, groups)
 
-	perms, ok := transformed["john"].Attributes["permissions"].([]string)
-	require.True(t, ok, "permissions should be []string, got %T", transformed["john"].Attributes["permissions"])
-	assert.Equal(t, []string{"read", "write", "execute"}, perms)
+	perms, ok := transformed["john"].Attributes["permissions"].([]any)
+	require.True(t, ok, "permissions should be []any, got %T", transformed["john"].Attributes["permissions"])
+	assert.Equal(t, []any{"read", "write", "execute"}, perms)
 
 	assert.Equal(t, "john@example.com", transformed["john"].Attributes["email"])
 }
@@ -294,7 +293,7 @@ func TestTemplateTransformer_ArrayExpansion(t *testing.T) {
 func TestTemplateTransformer_ArrayExpansion_IntSlice(t *testing.T) {
 	config := map[string]any{
 		"templates": map[string]any{
-			"ids": "{{.Attributes.userIds}}",
+			"ids": "{{.Attributes.userIds | toJson}}",
 		},
 	}
 
@@ -315,16 +314,53 @@ func TestTemplateTransformer_ArrayExpansion_IntSlice(t *testing.T) {
 
 	require.NoError(t, err)
 
-	ids, ok := transformed["john"].Attributes["ids"].([]int)
-	require.True(t, ok, "ids should be []int, got %T", transformed["john"].Attributes["ids"])
-	assert.Equal(t, []int{100, 200, 300}, ids)
+	ids, ok := transformed["john"].Attributes["ids"].([]any)
+	require.True(t, ok, "ids should be []any, got %T", transformed["john"].Attributes["ids"])
+	assert.Equal(t, []any{int64(100), int64(200), int64(300)}, ids)
+}
+
+func TestTemplateTransformer_ArrayExpansion_MailSettings(t *testing.T) {
+	config := map[string]any{
+		"templates": map[string]any{
+			"iredadmin:enabledService": "{{ .Attributes.mailEnabledService | toJson }}",
+		},
+	}
+
+	tt, err := NewTemplateTransformer(config)
+	require.NoError(t, err)
+
+	identities := map[string]source.Identity{
+		"sralmerol": {
+			Username: "sralmerol",
+			Attributes: map[string]any{
+				"mailEnabledService": []string{
+					"managesieve",
+					"deliver",
+					"sogowebmail",
+					"nimbus",
+					"mail",
+				},
+			},
+		},
+	}
+
+	ctx := NewContext(context.Background(), nil)
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
+
+	require.NoError(t, err)
+
+	enabledServices, ok := transformed["sralmerol"].Attributes["iredadmin:enabledService"].([]any)
+	require.True(t, ok, "should be []any, got %T", transformed["sralmerol"].Attributes["iredadmin:enabledService"])
+
+	expected := []any{"managesieve", "deliver", "sogowebmail", "nimbus", "mail"}
+	assert.Equal(t, expected, enabledServices)
 }
 
 func TestTemplateTransformer_ArrayExpansion_ComplexTemplate(t *testing.T) {
 	config := map[string]any{
 		"templates": map[string]any{
 			"combined": "{{.Username}}-{{.Attributes.groupList}}",
-			"pure":     "{{.Attributes.groupList}}",
+			"pure":     "{{.Attributes.groupList | toJson}}",
 		},
 	}
 
@@ -345,19 +381,17 @@ func TestTemplateTransformer_ArrayExpansion_ComplexTemplate(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// Complex template should remain as string
 	assert.Equal(t, "john-[admin users]", transformed["john"].Attributes["combined"])
 
-	// Pure array reference should expand
-	pure, ok := transformed["john"].Attributes["pure"].([]string)
-	require.True(t, ok, "pure should be []string, got %T", transformed["john"].Attributes["pure"])
-	assert.Equal(t, []string{"admin", "users"}, pure)
+	pure, ok := transformed["john"].Attributes["pure"].([]any)
+	require.True(t, ok, "pure should be []any, got %T", transformed["john"].Attributes["pure"])
+	assert.Equal(t, []any{"admin", "users"}, pure)
 }
 
 func TestTemplateTransformer_ArrayExpansion_EmptyArray(t *testing.T) {
 	config := map[string]any{
 		"templates": map[string]any{
-			"groups": "{{.Attributes.groupList}}",
+			"groups": "{{.Attributes.groupList | toJson}}",
 		},
 	}
 
@@ -378,9 +412,9 @@ func TestTemplateTransformer_ArrayExpansion_EmptyArray(t *testing.T) {
 
 	require.NoError(t, err)
 
-	groups, ok := transformed["john"].Attributes["groups"].([]string)
-	require.True(t, ok, "groups should be []string, got %T", transformed["john"].Attributes["groups"])
-	assert.Equal(t, []string{}, groups)
+	groups, ok := transformed["john"].Attributes["groups"].([]any)
+	require.True(t, ok, "groups should be []any, got %T", transformed["john"].Attributes["groups"])
+	assert.Equal(t, []any{}, groups)
 }
 
 func TestTemplateTransformer_StringFunctions(t *testing.T) {
@@ -499,8 +533,16 @@ func TestTemplateTransformer_JsonFunctions(t *testing.T) {
 	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"name":"John","age":30}`, transformed["john"].Attributes["json"].(string))
-	assert.Contains(t, transformed["john"].Attributes["prettyJson"], "John")
+
+	jsonResult, ok := transformed["john"].Attributes["json"].(map[string]any)
+	require.True(t, ok, "json should be map[string]any, got %T", transformed["john"].Attributes["json"])
+	assert.Equal(t, "John", jsonResult["name"])
+	assert.Equal(t, int64(30), jsonResult["age"])
+
+	prettyJsonResult, ok := transformed["john"].Attributes["prettyJson"].(map[string]any)
+	require.True(t, ok, "prettyJson should be map[string]any, got %T", transformed["john"].Attributes["prettyJson"])
+	assert.Equal(t, "John", prettyJsonResult["name"])
+	assert.Equal(t, int64(30), prettyJsonResult["age"])
 }
 
 func TestTemplateTransformer_DefaultFunction(t *testing.T) {
@@ -559,7 +601,7 @@ func TestTemplateTransformer_ListFunctions(t *testing.T) {
 			"firstGroup": `{{.Attributes.groups | first}}`,
 			"lastGroup":  `{{.Attributes.groups | last}}`,
 			"restGroups": `{{.Attributes.groups | rest | join ","}}`,
-			"uniqueNums": `{{.Attributes.numbers | uniq}}`,
+			"uniqueNums": `{{.Attributes.numbers | uniq | toJson}}`,
 		},
 	}
 
@@ -583,6 +625,10 @@ func TestTemplateTransformer_ListFunctions(t *testing.T) {
 	assert.Equal(t, "admin", transformed["john"].Attributes["firstGroup"])
 	assert.Equal(t, "developers", transformed["john"].Attributes["lastGroup"])
 	assert.Equal(t, "users,developers", transformed["john"].Attributes["restGroups"])
+
+	uniqueNums, ok := transformed["john"].Attributes["uniqueNums"].([]any)
+	require.True(t, ok, "uniqueNums should be []any, got %T", transformed["john"].Attributes["uniqueNums"])
+	assert.Equal(t, []any{int64(1), int64(2), int64(3)}, uniqueNums)
 }
 
 func TestTemplateTransformer_RegexFunctions(t *testing.T) {
@@ -609,7 +655,7 @@ func TestTemplateTransformer_RegexFunctions(t *testing.T) {
 	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
 
 	require.NoError(t, err)
-	assert.Equal(t, "true", transformed["john"].Attributes["matches"])
+	assert.Equal(t, true, transformed["john"].Attributes["matches"])
 	assert.Equal(t, "helloworld", transformed["john"].Attributes["sanitized"])
 }
 
@@ -663,4 +709,60 @@ func TestTemplateTransformer_ComplexPipeline(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "john@example.com", transformed["john"].Attributes["email"])
+}
+
+func TestTemplateTransformer_AutoParseNumbers(t *testing.T) {
+	config := map[string]any{
+		"templates": map[string]any{
+			"age":     `42`,
+			"pi":      `3.14159`,
+			"isAdmin": `true`,
+		},
+	}
+
+	tt, err := NewTemplateTransformer(config)
+	require.NoError(t, err)
+
+	identities := map[string]source.Identity{
+		"john": {
+			Username:   "john",
+			Attributes: make(map[string]any),
+		},
+	}
+
+	ctx := NewContext(context.Background(), nil)
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), transformed["john"].Attributes["age"])
+	assert.Equal(t, 3.14159, transformed["john"].Attributes["pi"])
+	assert.Equal(t, true, transformed["john"].Attributes["isAdmin"])
+}
+
+func TestTemplateTransformer_DictFunction(t *testing.T) {
+	config := map[string]any{
+		"templates": map[string]any{
+			"metadata": `{{dict "user" .Username "email" .Email | toJson}}`,
+		},
+	}
+
+	tt, err := NewTemplateTransformer(config)
+	require.NoError(t, err)
+
+	identities := map[string]source.Identity{
+		"john": {
+			Username:   "john",
+			Email:      "john@example.com",
+			Attributes: make(map[string]any),
+		},
+	}
+
+	ctx := NewContext(context.Background(), nil)
+	transformed, _, err := tt.Transform(ctx, identities, map[string]source.Group{})
+
+	require.NoError(t, err)
+	metadata, ok := transformed["john"].Attributes["metadata"].(map[string]any)
+	require.True(t, ok, "metadata should be map[string]any, got %T", transformed["john"].Attributes["metadata"])
+	assert.Equal(t, "john", metadata["user"])
+	assert.Equal(t, "john@example.com", metadata["email"])
 }

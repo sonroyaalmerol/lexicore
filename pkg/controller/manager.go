@@ -24,6 +24,7 @@ import (
 type reconcileTask struct {
 	targetName string
 	immediate  bool
+	batchID    string
 }
 
 type ActiveOperator struct {
@@ -320,32 +321,58 @@ func (m *Manager) globalTicker(ctx context.Context) {
 
 func (m *Manager) scheduleReconciliations() {
 	now := time.Now()
-	scheduled := 0
-	skipped := 0
+	batchID := fmt.Sprintf("batch-%d", now.Unix())
+
+	sourceToTargets := make(map[string][]string)
 
 	m.activeOperators.Range(func(name string, target *ActiveOperator) bool {
 		if now.Sub(target.lastReconciled) >= m.cfg.DefaultSyncPeriod {
-			select {
-			case m.queue <- reconcileTask{targetName: name, immediate: false}:
-				scheduled++
-			case <-m.shutdownCtx.Done():
-				return false
-			default:
-				skipped++
-				m.logger.Warn(
-					"Queue full, skipping reconciliation",
-					zap.String("target", name),
-				)
-			}
+			sourceRef := target.manifest.Spec.SourceRef
+			sourceToTargets[sourceRef] = append(sourceToTargets[sourceRef], name)
 		}
 		return true
 	})
+
+	if len(sourceToTargets) == 0 {
+		return
+	}
+
+	scheduled := 0
+	skipped := 0
+
+	for sourceRef, targetNames := range sourceToTargets {
+		task := reconcileTask{
+			targetName: sourceRef,
+			immediate:  false,
+			batchID:    batchID,
+		}
+
+		select {
+		case m.queue <- task:
+			scheduled += len(targetNames)
+			m.logger.Debug(
+				"Scheduled batch reconciliation",
+				zap.String("source", sourceRef),
+				zap.Strings("targets", targetNames),
+			)
+		case <-m.shutdownCtx.Done():
+			return
+		default:
+			skipped += len(targetNames)
+			m.logger.Warn(
+				"Queue full, skipping batch reconciliation",
+				zap.String("source", sourceRef),
+				zap.Strings("targets", targetNames),
+			)
+		}
+	}
 
 	if scheduled > 0 || skipped > 0 {
 		m.logger.Debug(
 			"Scheduled reconciliations",
 			zap.Int("scheduled", scheduled),
 			zap.Int("skipped", skipped),
+			zap.Int("batches", len(sourceToTargets)),
 		)
 	}
 }
@@ -367,20 +394,31 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 				return
 			}
 
-			if err := m.reconcile(task.targetName); err != nil {
-				logger.Error(
-					"Reconciliation failed",
-					zap.String("target", task.targetName),
-					zap.Error(err),
-				)
+			if task.batchID != "" {
+				if err := m.reconcileBatch(task.targetName, task.batchID); err != nil {
+					logger.Error(
+						"Batch reconciliation failed",
+						zap.String("source", task.targetName),
+						zap.String("batchID", task.batchID),
+						zap.Error(err),
+					)
+				}
 			} else {
-				logger.Debug(
-					"Reconciliation completed",
-					zap.String("target", task.targetName),
-				)
+				if err := m.reconcile(task.targetName); err != nil {
+					logger.Error(
+						"Reconciliation failed",
+						zap.String("target", task.targetName),
+						zap.Error(err),
+					)
+				} else {
+					logger.Debug(
+						"Reconciliation completed",
+						zap.String("target", task.targetName),
+					)
 
-				if target, ok := m.activeOperators.Load(task.targetName); ok {
-					target.lastReconciled = time.Now()
+					if target, ok := m.activeOperators.Load(task.targetName); ok {
+						target.lastReconciled = time.Now()
+					}
 				}
 			}
 		}

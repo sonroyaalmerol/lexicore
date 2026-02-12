@@ -1,75 +1,107 @@
 package iredadmin
 
 import (
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
-func (o *IRedAdminOperator) GetAttributePrefix() string {
-	if o.attrPrefix != nil {
-		return *o.attrPrefix
-	}
-
-	if prefix, err := o.BaseOperator.GetStringConfig("attributePrefix"); err == nil {
-		o.attrPrefix = &prefix
-		return prefix
-	}
-
-	return ""
-}
-func (o *IRedAdminOperator) getConcurrency() int {
-	workers := 10
-	if w, ok := o.GetConfig("concurrency"); ok {
-		if wInt, ok := w.(int); ok && wInt > 0 {
-			workers = wInt
-		} else if wFloat, ok := w.(float64); ok && wFloat > 0 {
-			workers = int(wFloat)
-		}
-	}
-	return workers
-}
-
 // manifest to iredadmin userdata
 func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 	u := UserData{}
 	u.CN = []string{identity.DisplayName}
+	prefix := o.GetAttributePrefix()
+
 	for k, v := range identity.Attributes {
-		fieldName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
+		fieldName, hasPrefix := strings.CutPrefix(k, prefix)
 		if !hasPrefix {
 			continue
 		}
-		if vString, ok := v.(string); ok {
+
+		if v == nil {
+			continue
+		}
+
+		var values []string
+		switch val := v.(type) {
+		case string:
+			values = []string{val}
+		case int:
+			if fieldName == AttributeQuota {
+				values = []string{strconv.Itoa(val)}
+			}
+		case int32:
+			if fieldName == AttributeQuota {
+				values = []string{strconv.Itoa(int(val))}
+			}
+		case int64:
+			if fieldName == AttributeQuota {
+				values = []string{strconv.Itoa(int(val))}
+			}
+		case bool:
+			if val {
+				values = []string{"true"}
+			} else {
+				values = []string{"false"}
+			}
+		case []string:
+			values = val
+		case []any:
+			for _, item := range val {
+				switch val2 := item.(type) {
+				case string:
+					values = append(values, val2)
+				case int:
+					values = append(values, strconv.Itoa(val2))
+				case int32:
+					values = append(values, strconv.Itoa(int(val2)))
+				case int64:
+					values = append(values, strconv.Itoa(int(val2)))
+				case bool:
+					if val2 {
+						values = append(values, "true")
+					} else {
+						values = append(values, "false")
+					}
+				default:
+					o.LogError(fmt.Errorf("unsupported type for attribute k array element: %T", item))
+					continue
+				}
+			}
+		default:
+			o.LogError(fmt.Errorf("unsupported type for attribute %s: %T", k, v))
+			continue
+		}
+
+		if len(values) > 0 {
+			slices.Sort(values)
+
 			switch fieldName {
 			case AttributeGivenName:
-				u.GivenName = []string{vString}
+				u.GivenName = values
 			case AttributeSN:
-				u.SN = []string{vString}
+				u.SN = values
 			case AttributeLanguage:
-				u.PreferredLanguage = []string{vString}
+				u.PreferredLanguage = values
 			case AttributeQuota:
-				u.MailQuota = []string{vString}
+				u.MailQuota = values
 			case AttributeStatus:
-				u.AccountStatus = []string{vString}
-			}
-		}
-		if vStrArray, ok := v.([]string); ok {
-			switch fieldName {
+				if len(values) > 0 && values[0] != "true" {
+					u.AccountStatus = []string{"disabled"}
+				} else {
+					u.AccountStatus = []string{"active"}
+				}
 			case AttributeForwardingAddresses:
-				u.MailForwardingAddress = vStrArray
+				u.MailForwardingAddress = values
 			case AttributeEnabledServices:
-				u.EnabledService = vStrArray
+				u.EnabledService = values
 			case AttributeMailingLists:
-				u.MailingLists = vStrArray
+				u.MailingLists = values
 			case AttributeAliases:
-				u.MailingAliases = vStrArray
-			}
-		}
-		if vInt, ok := v.(int); ok {
-			switch fieldName {
-			case AttributeQuota:
-				u.MailQuota = []string{strconv.Itoa(vInt)}
+				u.MailingAliases = values
 			}
 		}
 	}

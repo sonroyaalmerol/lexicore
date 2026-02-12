@@ -7,21 +7,26 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/utils"
+	"github.com/sethvargo/go-password/password"
 )
 
 func (o *IRedAdminOperator) createUser(
 	ctx context.Context,
 	id *source.Identity,
 ) error {
+	res, err := password.Generate(64, 10, 10, false, false)
+	if err != nil {
+		return err
+	}
+
 	escaped := url.PathEscape(id.Email)
 	var param = url.Values{}
 	param.Set("name", id.DisplayName)
-	param.Set("password", "")
+	param.Set("password", res)
 
 	var paramForUpdate = url.Values{}
 	hasUpdate := false
@@ -140,19 +145,19 @@ func (o *IRedAdminOperator) updateUser(
 		hasDiff = true
 		data.Set("accountStatus", strings.Join(newUser.AccountStatus, ","))
 	}
-	if !slices.Equal(current.EnabledService, newUser.EnabledService) {
+	if !utils.SlicesAreEqual(current.EnabledService, newUser.EnabledService) {
 		hasDiff = true
 		data.Set("services", strings.Join(newUser.EnabledService, ","))
 	}
-	if !slices.Equal(current.MailingAliases, newUser.MailingAliases) {
+	if !utils.SlicesAreEqual(current.MailingAliases, newUser.MailingAliases) {
 		hasDiff = true
 		data.Set("aliases", strings.Join(newUser.MailingAliases, ","))
 	}
-	if !slices.Equal(current.MailForwardingAddress, newUser.MailForwardingAddress) {
+	if !utils.SlicesAreEqual(current.MailForwardingAddress, newUser.MailForwardingAddress) {
 		hasDiff = true
 		data.Set("forwarding", strings.Join(newUser.MailForwardingAddress, ","))
 	}
-	if !slices.Equal(current.MailingLists, newUser.MailingLists) {
+	if !utils.SlicesAreEqual(current.MailingLists, newUser.MailingLists) {
 		hasDiffMl = true
 	}
 
@@ -311,7 +316,7 @@ func execHttp[T any](
 	ctx context.Context,
 	req *http.Request,
 ) (*APIResponse[T], error) {
-	if err := o.limiter.Wait(ctx); err != nil {
+	if err := o.GetLimiter().Wait(ctx); err != nil {
 		return nil, err
 	}
 

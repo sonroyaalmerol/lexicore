@@ -36,7 +36,10 @@ func NewTemplateTransformer(config map[string]any) (*TemplateTransformer, error)
 			continue
 		}
 
-		tmpl, err := template.New(key).Funcs(funcMap).Parse(str)
+		tmpl, err := template.New(key).
+			Funcs(funcMap).
+			Option("missingkey=zero").
+			Parse(str)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", key, err)
 		}
@@ -246,6 +249,23 @@ func createFuncMap() template.FuncMap {
 		"squote": func(s string) string {
 			return fmt.Sprintf("'%s'", strings.ReplaceAll(s, "'", "\\'"))
 		},
+		"array": func(vals ...any) []any {
+			return vals
+		},
+		"dict": func(pairs ...any) (map[string]any, error) {
+			if len(pairs)%2 != 0 {
+				return nil, fmt.Errorf("dict requires an even number of arguments")
+			}
+			result := make(map[string]any, len(pairs)/2)
+			for i := 0; i < len(pairs); i += 2 {
+				key, ok := pairs[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict keys must be strings")
+				}
+				result[key] = pairs[i+1]
+			}
+			return result, nil
+		},
 	}
 }
 
@@ -273,9 +293,7 @@ func (t *TemplateTransformer) Transform(
 			}
 
 			result := buf.String()
-
-			expandedValue := t.expandIfArray(&identity, result)
-			transformed.Attributes[tmplKey] = expandedValue
+			transformed.Attributes[tmplKey] = parseTemplateResult(result)
 		}
 
 		identities[key] = transformed
@@ -284,20 +302,56 @@ func (t *TemplateTransformer) Transform(
 	return identities, groups, nil
 }
 
-func (t *TemplateTransformer) expandIfArray(identity *source.Identity, result string) any {
-	if identity.Attributes == nil {
+func parseTemplateResult(result string) any {
+	trimmed := strings.TrimSpace(result)
+
+	if trimmed == "" {
 		return result
 	}
 
-	for _, attrValue := range identity.Attributes {
-		rv := reflect.ValueOf(attrValue)
-		if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
-			strRepresentation := fmt.Sprintf("%v", attrValue)
-			if strRepresentation == result {
-				return attrValue
+	if len(trimmed) > 0 && (trimmed[0] == '[' || trimmed[0] == '{' ||
+		trimmed == "true" || trimmed == "false" || trimmed == "null" ||
+		(trimmed[0] >= '0' && trimmed[0] <= '9') || trimmed[0] == '-') {
+
+		var jsonValue any
+		if err := json.Unmarshal([]byte(trimmed), &jsonValue); err == nil {
+			switch v := jsonValue.(type) {
+			case []any, map[string]any:
+				return normalizeJSONValue(v)
+			case float64:
+				if float64(int64(v)) == v {
+					return int64(v)
+				}
+				return v
+			case bool, nil:
+				return v
 			}
 		}
 	}
 
 	return result
+}
+
+func normalizeJSONValue(v any) any {
+	switch val := v.(type) {
+	case []any:
+		normalized := make([]any, len(val))
+		for i, item := range val {
+			normalized[i] = normalizeJSONValue(item)
+		}
+		return normalized
+	case map[string]any:
+		normalized := make(map[string]any, len(val))
+		for key, item := range val {
+			normalized[key] = normalizeJSONValue(item)
+		}
+		return normalized
+	case float64:
+		if float64(int64(val)) == val {
+			return int64(val)
+		}
+		return val
+	default:
+		return val
+	}
 }

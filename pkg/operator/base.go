@@ -6,15 +6,18 @@ import (
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 type BaseOperator struct {
-	name   string
-	config map[string]any
-	mu     sync.RWMutex
-	logger *zap.Logger
+	name    string
+	config  map[string]any
+	mu      sync.RWMutex
+	logger  *zap.Logger
+	limiter *rate.Limiter
 
 	groupAttributeMappings []GroupAttributeMapping
+	attrPrefix             *string
 }
 
 func NewBaseOperator(name string, logger *zap.Logger) *BaseOperator {
@@ -22,7 +25,6 @@ func NewBaseOperator(name string, logger *zap.Logger) *BaseOperator {
 		name:   name,
 		logger: logger,
 	}
-	op.groupAttributeMappings = op.getGroupAttributeMappings()
 
 	return op
 }
@@ -31,7 +33,53 @@ func (b *BaseOperator) Name() string {
 	return b.name
 }
 
-func (b *BaseOperator) getGroupAttributeMappings() []GroupAttributeMapping {
+func (b *BaseOperator) GetConcurrency() int {
+	workers := 10
+	if w, ok := b.GetConfig("concurrency"); ok {
+		if wInt, ok := w.(int); ok && wInt > 0 {
+			workers = wInt
+		} else if wFloat, ok := w.(float64); ok && wFloat > 0 {
+			workers = int(wFloat)
+		}
+	}
+	return workers
+}
+
+func (b *BaseOperator) GetLimiter() *rate.Limiter {
+	if b.limiter != nil {
+		return b.limiter
+	}
+
+	rateLimit := 50.0
+	if rl, ok := b.GetConfig("rateLimit"); ok {
+		if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
+			rateLimit = rlFloat
+		}
+	}
+
+	b.limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
+
+	return b.limiter
+}
+
+func (b *BaseOperator) GetAttributePrefix() string {
+	if b.attrPrefix != nil {
+		return *b.attrPrefix
+	}
+
+	if prefix, err := b.GetStringConfig("attributePrefix"); err == nil {
+		b.attrPrefix = &prefix
+		return prefix
+	}
+
+	return ""
+}
+
+func (b *BaseOperator) GetGroupAttributeMappings() []GroupAttributeMapping {
+	if b.groupAttributeMappings != nil {
+		return b.groupAttributeMappings
+	}
+
 	mappingsRaw, ok := b.GetConfig("groupAttributeMappings")
 	if !ok {
 		return nil
@@ -57,15 +105,9 @@ func (b *BaseOperator) getGroupAttributeMappings() []GroupAttributeMapping {
 		}
 	}
 
+	b.groupAttributeMappings = mappings
+
 	return mappings
-}
-
-func (b *BaseOperator) GetAttributePrefix() string {
-	if prefix, err := b.GetStringConfig("attributePrefix"); err == nil {
-		return prefix
-	}
-
-	return ""
 }
 
 func (b *BaseOperator) EnrichIdentity(
@@ -78,11 +120,11 @@ func (b *BaseOperator) EnrichIdentity(
 		enriched.Attributes = make(map[string]any)
 	}
 
-	if len(b.groupAttributeMappings) == 0 {
+	if len(b.GetGroupAttributeMappings()) == 0 {
 		return enriched
 	}
 
-	for _, mapping := range b.groupAttributeMappings {
+	for _, mapping := range b.GetGroupAttributeMappings() {
 		b.applyMapping(&enriched, allGroups, mapping)
 	}
 
@@ -96,12 +138,19 @@ func (b *BaseOperator) applyMapping(
 ) {
 	targetKey := b.GetAttributePrefix() + mapping.TargetAttribute
 
-	// Skip if attribute already exists and we're not appending
-	if _, exists := identity.Attributes[targetKey]; exists && mapping.AggregationMode != "append" {
-		return
+	if _, exists := identity.Attributes[targetKey]; exists {
+		switch mapping.AggregationMode {
+		case "append", "uniqueAppend":
+			// Continue to append
+		case "override":
+			// Continue to override
+		default:
+			// Skip for other modes
+			return
+		}
 	}
 
-	values := make([]any, 0, len(identity.Groups))
+	values := make([]any, 0)
 
 	for _, groupKey := range identity.Groups {
 		group, ok := allGroups[groupKey]
@@ -129,7 +178,7 @@ func (b *BaseOperator) applyMapping(
 	case "first":
 		identity.Attributes[targetKey] = values[0]
 
-	case "last":
+	case "last", "override":
 		identity.Attributes[targetKey] = values[len(values)-1]
 
 	case "max":
@@ -138,15 +187,32 @@ func (b *BaseOperator) applyMapping(
 	case "min":
 		identity.Attributes[targetKey] = getMinValue(values)
 
-	case "append":
-		existing, _ := identity.Attributes[targetKey].([]any)
-		if existing == nil {
-			existing = make([]any, 0, len(values))
+	case "append", "uniqueAppend":
+		existing, ok := identity.Attributes[targetKey].([]any)
+		if !ok && identity.Attributes[targetKey] != nil {
+			existing = []any{identity.Attributes[targetKey]}
 		}
-		identity.Attributes[targetKey] = append(existing, values...)
 
-	case "override":
-		identity.Attributes[targetKey] = values[len(values)-1]
+		if mapping.AggregationMode == "uniqueAppend" {
+			seen := make(map[any]struct{}, len(existing)+len(values))
+
+			for _, v := range existing {
+				seen[v] = struct{}{}
+			}
+
+			for _, v := range values {
+				if _, exists := seen[v]; !exists {
+					existing = append(existing, v)
+					seen[v] = struct{}{}
+				}
+			}
+			identity.Attributes[targetKey] = existing
+		} else {
+			if existing == nil {
+				existing = make([]any, 0, len(values))
+			}
+			identity.Attributes[targetKey] = append(existing, values...)
+		}
 
 	case "weighted":
 		identity.Attributes[targetKey] = b.getWeightedValue(identity, allGroups, mapping)

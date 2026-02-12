@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
-	"golang.org/x/time/rate"
 )
 
 type APIResponse[T any] struct {
@@ -47,11 +46,9 @@ type IRedAdminOperator struct {
 	*operator.BaseOperator
 	Client          *http.Client
 	baseURL         string
-	limiter         *rate.Limiter
 	domain          string
 	deleteOnDisable bool
 	deleteOnDelete  bool
-	attrPrefix      *string
 	keepMailboxDays int
 }
 
@@ -66,13 +63,6 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 	o.domain, _ = o.GetStringConfig("domain")
 
 	jar, _ := cookiejar.New(nil)
-
-	rateLimit := 50.0
-	if rl, ok := o.GetConfig("rateLimit"); ok {
-		if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
-			rateLimit = rlFloat
-		}
-	}
 
 	o.deleteOnDisable = false
 	if rl, ok := o.GetConfig("deleteOnDisable"); ok {
@@ -94,8 +84,6 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 			o.keepMailboxDays = rlFloat
 		}
 	}
-
-	o.limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
 
 	if o.Client == nil {
 		o.Client = &http.Client{
@@ -130,7 +118,7 @@ func (o *IRedAdminOperator) login(ctx context.Context) error {
 	data.Set("username", user)
 	data.Set("password", pass)
 
-	if err := o.limiter.Wait(ctx); err != nil {
+	if err := o.BaseOperator.GetLimiter().Wait(ctx); err != nil {
 		return err
 	}
 
@@ -172,7 +160,7 @@ func (o *IRedAdminOperator) Sync(
 		}
 	}
 
-	workers := o.getConcurrency()
+	workers := o.GetConcurrency()
 	result := &operator.SyncResult{}
 
 	sem := make(chan struct{}, workers)

@@ -422,9 +422,9 @@ func (s *AuthentikSource) mapUser(u authentik.User) source.Identity {
 		UID:         strconv.Itoa(int(u.Pk)),
 		Username:    u.Username,
 		Email:       email,
-		DisplayName: u.Name,
-		Groups:      u.Groups,
-		Attributes:  u.Attributes,
+		DisplayName: u.GetName(),
+		Groups:      u.GetGroups(),
+		Attributes:  u.GetAttributes(),
 		Disabled:    !u.GetIsActive(),
 	}
 }

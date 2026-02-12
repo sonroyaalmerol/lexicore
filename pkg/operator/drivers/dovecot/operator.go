@@ -1,22 +1,30 @@
 package dovecot
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/base64"
 	"fmt"
-	"io"
+	"maps"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 )
 
-type DoveadmRequest []any
-
 type DovecotOperator struct {
 	*operator.BaseOperator
-	Client *http.Client
+	baseURL     string
+	Client      *http.Client
+	b64Password string
+}
+
+type mailboxListResult struct {
+	uid       string
+	username  string
+	mailboxes []string
+	err       error
 }
 
 func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any) error {
@@ -24,6 +32,23 @@ func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any)
 	if err := o.Validate(ctx); err != nil {
 		return err
 	}
+
+	if o.Client == nil {
+		o.Client = &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			},
+			Timeout: 30 * time.Second,
+		}
+	}
+
+	apiURL, _ := o.GetStringConfig("url")
+	o.baseURL = strings.TrimSuffix(apiURL, "/")
+
+	apiKey, _ := o.GetStringConfig("apiKey")
+	o.b64Password = base64.URLEncoding.EncodeToString([]byte(apiKey))
 
 	return nil
 }
@@ -38,87 +63,259 @@ func (o *DovecotOperator) Validate(ctx context.Context) error {
 
 func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
 	result := &operator.SyncResult{}
-	apiURL, _ := o.GetStringConfig("url")
+
+	allMailboxes := make(map[string]struct{})
+	mailboxDesiredACLs := make(map[string]map[string][]string)
+	mailboxNoPropagate := make(map[string]bool)
+	usersAffectedByMailbox := make(map[string]map[string]struct{})
+
+	workers := o.GetConcurrency()
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	mailboxListChan := make(chan mailboxListResult, len(state.Identities))
 
 	for uid, identity := range state.Identities {
 		enriched := o.EnrichIdentity(identity, state.Groups)
 
-		err := o.exec(ctx, apiURL, enriched.Username, "mailboxCreate", map[string]any{
-			"user":    enriched.Username,
-			"mailbox": "INBOX",
-		}, state.DryRun)
+		aclsAny, ok := enriched.Attributes[o.getACLAttrKey()]
+		if !ok {
+			continue
+		}
 
-		if err != nil {
-			o.LogError(fmt.Errorf("user %s (uid: %s) mailbox init failed: %w", enriched.Username, uid, err))
+		aclsAnyArr, isArr := aclsAny.([]any)
+		if !isArr {
+			continue
+		}
+
+		acls := make([]string, 0, len(aclsAnyArr))
+		for _, anyVal := range aclsAnyArr {
+			strVal, isStr := anyVal.(string)
+			if !isStr {
+				continue
+			}
+			acls = append(acls, strVal)
+		}
+
+		o.LogInfo("checking user %s (uid: %s)", identity.Email, uid)
+
+		desiredAcls := o.mergeSharedMailAcls(acls)
+
+		for _, aclStr := range desiredAcls {
+			mailboxKey, rights, noPropagate := o.parseACLString(aclStr)
+			if mailboxKey == "" {
+				continue
+			}
+
+			allMailboxes[mailboxKey] = struct{}{}
+
+			if mailboxDesiredACLs[mailboxKey] == nil {
+				mailboxDesiredACLs[mailboxKey] = make(map[string][]string)
+			}
+			mailboxDesiredACLs[mailboxKey][identity.Username] = rights
+
+			if noPropagate {
+				mailboxNoPropagate[mailboxKey] = true
+			}
+
+			if usersAffectedByMailbox[mailboxKey] == nil {
+				usersAffectedByMailbox[mailboxKey] = make(map[string]struct{})
+			}
+			usersAffectedByMailbox[mailboxKey][uid] = struct{}{}
+		}
+
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			mailboxList, err := o.getAllNonPersonalMailbox(ctx, identity.Username)
+			mailboxListChan <- mailboxListResult{
+				uid:       uid,
+				username:  identity.Username,
+				mailboxes: mailboxList,
+				err:       err,
+			}
+		})
+	}
+
+	go func() {
+		wg.Wait()
+		close(mailboxListChan)
+	}()
+
+	for res := range mailboxListChan {
+		if res.err != nil {
+			o.LogError(fmt.Errorf("user %s (uid: %s) mailbox list failed: %w", res.username, res.uid, res.err))
 			result.ErrCount.Add(1)
 			continue
 		}
 
-		if aclStr, ok := enriched.Attributes[fmt.Sprintf("%sacl", o.GetAttributePrefix())].(string); ok && aclStr != "" {
-			err = o.exec(ctx, apiURL, enriched.Username, "aclSet", map[string]any{
-				"user":    enriched.Username,
-				"mailbox": "INBOX",
-				"right":   aclStr,
-			}, state.DryRun)
+		for _, fullMailbox := range res.mailboxes {
+			trimmed := strings.TrimPrefix(fullMailbox, "Other Users/")
+			allMailboxes[trimmed] = struct{}{}
 
-			if err != nil {
-				o.LogError(fmt.Errorf("user %s (uid: %s) acl sync failed: %w", enriched.Username, uid, err))
-				result.ErrCount.Add(1)
-				continue
+			if usersAffectedByMailbox[trimmed] == nil {
+				usersAffectedByMailbox[trimmed] = make(map[string]struct{})
+			}
+			usersAffectedByMailbox[trimmed][res.uid] = struct{}{}
+		}
+	}
+
+	expandedACLs := make(map[string]map[string][]string)
+	for mailboxKey := range allMailboxes {
+		expandedACLs[mailboxKey] = make(map[string][]string)
+	}
+
+	for mailboxKey, userACLs := range mailboxDesiredACLs {
+		maps.Copy(expandedACLs[mailboxKey], userACLs)
+	}
+
+	for mailboxKey := range allMailboxes {
+		parts := strings.SplitN(mailboxKey, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		sharedFolder := parts[0]
+		mailboxPath := parts[1]
+
+		if mailboxPath == "INBOX" {
+			continue
+		}
+
+		pathParts := strings.Split(mailboxPath, "/")
+		for i := len(pathParts) - 1; i > 0; i-- {
+			parentPath := strings.Join(pathParts[:i], "/")
+			parentKey := fmt.Sprintf("%s/%s", sharedFolder, parentPath)
+
+			if mailboxNoPropagate[parentKey] {
+				break
+			}
+
+			if parentACLs, exists := mailboxDesiredACLs[parentKey]; exists {
+				for username, rights := range parentACLs {
+					if _, hasExplicit := mailboxDesiredACLs[mailboxKey][username]; !hasExplicit {
+						if expandedACLs[mailboxKey] == nil {
+							expandedACLs[mailboxKey] = make(map[string][]string)
+						}
+						if _, alreadyInherited := expandedACLs[mailboxKey][username]; !alreadyInherited {
+							expandedACLs[mailboxKey][username] = rights
+						}
+					}
+				}
 			}
 		}
 
-		result.IdentitiesUpdated.Add(1)
+		inboxKey := fmt.Sprintf("%s/INBOX", sharedFolder)
+		if !mailboxNoPropagate[inboxKey] {
+			if inboxACLs, exists := mailboxDesiredACLs[inboxKey]; exists {
+				for username, rights := range inboxACLs {
+					if _, hasExplicit := mailboxDesiredACLs[mailboxKey][username]; !hasExplicit {
+						if _, alreadyInherited := expandedACLs[mailboxKey][username]; !alreadyInherited {
+							if expandedACLs[mailboxKey] == nil {
+								expandedACLs[mailboxKey] = make(map[string][]string)
+							}
+							expandedACLs[mailboxKey][username] = rights
+						}
+					}
+				}
+			}
+		}
 	}
+
+	var usersWithChangesMu sync.Mutex
+	usersWithChanges := make(map[string]struct{})
+
+	var wg2 sync.WaitGroup
+
+	for mailboxKey := range allMailboxes {
+		select {
+		case <-ctx.Done():
+			wg2.Wait()
+			return result, ctx.Err()
+		default:
+		}
+
+		wg2.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			parts := strings.SplitN(mailboxKey, "/", 2)
+			if len(parts) != 2 {
+				return
+			}
+
+			sharedFolder := parts[0]
+			mailboxPath := parts[1]
+			fullMailboxPath := fmt.Sprintf("Other Users/%s", mailboxKey)
+
+			currentACL, err := o.getMailboxACLs(ctx, fullMailboxPath)
+			if err != nil {
+				o.LogError(fmt.Errorf("acl get for %s failed: %w", fullMailboxPath, err))
+				result.ErrCount.Add(1)
+				return
+			}
+
+			desiredForMailbox := expandedACLs[mailboxKey]
+			if desiredForMailbox == nil {
+				desiredForMailbox = make(map[string][]string)
+			}
+
+			diff := o.calculateMailboxDiff(
+				sharedFolder,
+				mailboxPath,
+				currentACL,
+				desiredForMailbox,
+			)
+
+			if len(diff.ToSet) > 0 || len(diff.ToRemove) > 0 {
+				if err := o.applyMailboxACLs(ctx, sharedFolder, mailboxPath, diff, state.DryRun); err != nil {
+					o.LogError(fmt.Errorf("failed to apply ACLs for %s: %w", mailboxKey, err))
+					result.ErrCount.Add(1)
+					return
+				}
+
+				usersWithChangesMu.Lock()
+				for uid := range usersAffectedByMailbox[mailboxKey] {
+					usersWithChanges[uid] = struct{}{}
+				}
+				usersWithChangesMu.Unlock()
+			}
+		})
+	}
+
+	wg2.Wait()
+
+	result.IdentitiesUpdated.Add(uint64(len(usersWithChanges)))
 
 	return result, nil
 }
 
-func (o *DovecotOperator) exec(ctx context.Context, apiURL, user, command string, params map[string]any, dryRun bool) error {
-	if dryRun {
-		return nil
+func (o *DovecotOperator) applyMailboxACLs(
+	ctx context.Context,
+	sharedFolder string,
+	mailboxPath string,
+	diff *MailboxDiff,
+	isDryRun bool,
+) error {
+	for username, rights := range diff.ToSet {
+		if isDryRun {
+			o.LogInfo("[DRY RUN] Would set %s rights for %s to %s/%s", rights, username, sharedFolder, mailboxPath)
+		} else {
+			if err := o.setMailboxACL(ctx, sharedFolder, mailboxPath, username, rights); err != nil {
+				return fmt.Errorf("failed to set ACL for %s: %w", username, err)
+			}
+		}
 	}
 
-	var tagBuilder strings.Builder
-	tagBuilder.Grow(len("lexicore-sync-") + len(user))
-	tagBuilder.WriteString("lexicore-sync-")
-	tagBuilder.WriteString(user)
-
-	payload := []DoveadmRequest{
-		{command, params, tagBuilder.String()},
-	}
-
-	buf := bytes.NewBuffer(make([]byte, 0, 256))
-	if err := json.NewEncoder(buf).Encode(payload); err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, buf)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	if apiKey, ok := o.GetStringConfig("api_key"); ok == nil && apiKey != "" {
-		var authBuilder strings.Builder
-		authBuilder.Grow(16 + len(apiKey))
-		authBuilder.WriteString("X-Dovecot-API ")
-		authBuilder.WriteString(apiKey)
-		req.Header.Set("Authorization", authBuilder.String())
-	} else if password, ok := o.GetStringConfig("password"); ok == nil && password != "" {
-		req.SetBasicAuth("doveadm", password)
-	}
-
-	resp, err := o.Client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("dovecot api error (%d): %s", resp.StatusCode, body)
+	for _, username := range diff.ToRemove {
+		if isDryRun {
+			o.LogInfo("[DRY RUN] Would remove rights for %s from %s/%s", username, sharedFolder, mailboxPath)
+		} else {
+			if err := o.deleteMailboxACL(ctx, sharedFolder, mailboxPath, username); err != nil {
+				return fmt.Errorf("failed to delete ACL for %s: %w", username, err)
+			}
+		}
 	}
 
 	return nil
