@@ -10,9 +10,13 @@ spec:
     url: "ldaps://dc01.example.com:636"
     bindDN: "cn=LexicoreService,ou=ServiceAccounts,dc=example,dc=com"
     bindPassword: "${AD_SERVICE_PASS}"
-    userBaseDN: "ou=Users,dc=example,dc=com"
+    searchBaseDN: "ou=Users,dc=example,dc=com"
     domain: "example.com"
     defaultPassword: "ChangeMe123!" # Required for initial creation
+    groupAttributeMappings:
+      - sourceAttribute: domainGroups
+        targetAttribute: adGroups
+        aggregationMode: uniqueAppend
   transformers:
     - name: ad-mapper
       type: template
@@ -23,3 +27,5 @@ spec:
           ad:department: "{{.Attributes.dept}}"
           ad:telephoneNumber: "{{.Attributes.phone}}"
           ad:company: "Acme Corp"
+          # baseDN is a required attribute
+          ad:baseDN: "ou=Users,dc=example,dc=com"

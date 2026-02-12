@@ -11,6 +11,7 @@ type MailboxDiff struct {
 	MailboxKey string
 	ToSet      map[string][]string
 	ToRemove   []string
+	DiffReport map[string]string
 }
 
 func (o *DovecotOperator) calculateMailboxDiff(
@@ -23,6 +24,7 @@ func (o *DovecotOperator) calculateMailboxDiff(
 		MailboxKey: fmt.Sprintf("%s/%s", sharedFolder, mailboxPath),
 		ToSet:      make(map[string][]string),
 		ToRemove:   []string{},
+		DiffReport: make(map[string]string),
 	}
 
 	currentUserACLs := make(map[string][]string)
@@ -40,9 +42,11 @@ func (o *DovecotOperator) calculateMailboxDiff(
 		currentRights, exists := currentUserACLs[username]
 		if !exists {
 			diff.ToSet[username] = desiredRights
+			diff.DiffReport[username] = utils.DiffArrString(currentRights, desiredRights)
 		} else {
 			if !utils.SlicesAreEqual(currentRights, desiredRights) {
 				diff.ToSet[username] = desiredRights
+				diff.DiffReport[username] = utils.DiffArrString(currentRights, desiredRights)
 			}
 		}
 	}

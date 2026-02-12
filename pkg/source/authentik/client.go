@@ -413,15 +413,10 @@ func (s *AuthentikSource) convertToString(v any) string {
 }
 
 func (s *AuthentikSource) mapUser(u authentik.User) source.Identity {
-	email := ""
-	if u.Email != nil {
-		email = *u.Email
-	}
-
 	return source.Identity{
 		UID:         strconv.Itoa(int(u.Pk)),
-		Username:    u.Username,
-		Email:       email,
+		Username:    u.GetUsername(),
+		Email:       u.GetEmail(),
 		DisplayName: u.GetName(),
 		Groups:      u.GetGroups(),
 		Attributes:  u.GetAttributes(),

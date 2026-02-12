@@ -15,7 +15,7 @@ type Pipeline struct {
 	transformers []Transformer
 }
 
-func NewPipeline(configs []manifest.TransformerConfig) (*Pipeline, error) {
+func NewPipeline(configs []manifest.TransformerConfig, prefix string) (*Pipeline, error) {
 	transformers := make([]Transformer, 0, len(configs))
 
 	for _, config := range configs {
@@ -29,6 +29,16 @@ func NewPipeline(configs []manifest.TransformerConfig) (*Pipeline, error) {
 		}
 		transformers = append(transformers, transformer)
 	}
+
+	prefixTransformer, err := NewPrefixTransformer(prefix)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create prefix transformer: %w",
+			err,
+		)
+	}
+
+	transformers = append(transformers, prefixTransformer)
 
 	return &Pipeline{transformers: transformers}, nil
 }

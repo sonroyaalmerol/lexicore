@@ -1,10 +1,14 @@
 package operator
 
 import (
+	"bytes"
 	"fmt"
+	"html/template"
+	"math"
 	"sync"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
+	"codeberg.org/lexicore/lexicore/pkg/utils"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
@@ -60,19 +64,6 @@ func (b *BaseOperator) GetLimiter() *rate.Limiter {
 	b.limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
 
 	return b.limiter
-}
-
-func (b *BaseOperator) GetAttributePrefix() string {
-	if b.attrPrefix != nil {
-		return *b.attrPrefix
-	}
-
-	if prefix, err := b.GetStringConfig("attributePrefix"); err == nil {
-		b.attrPrefix = &prefix
-		return prefix
-	}
-
-	return ""
 }
 
 func (b *BaseOperator) GetGroupAttributeMappings() []GroupAttributeMapping {
@@ -136,7 +127,7 @@ func (b *BaseOperator) applyMapping(
 	allGroups map[string]source.Group,
 	mapping GroupAttributeMapping,
 ) {
-	targetKey := b.GetAttributePrefix() + mapping.TargetAttribute
+	targetKey := mapping.TargetAttribute
 
 	if _, exists := identity.Attributes[targetKey]; exists {
 		switch mapping.AggregationMode {
@@ -231,8 +222,8 @@ func (b *BaseOperator) getWeightedValue(
 		return nil
 	}
 
-	var totalWeight float64
-	var weightedSum float64
+	var mostWeighted any
+	var maxWeight float64 = math.MinInt64
 
 	for _, groupKey := range identity.Groups {
 		group, ok := allGroups[groupKey]
@@ -243,24 +234,26 @@ func (b *BaseOperator) getWeightedValue(
 		value, hasValue := group.Attributes[mapping.SourceAttribute]
 		weight, hasWeight := group.Attributes[mapping.WeightAttribute]
 
-		if !hasValue || !hasWeight {
+		if !hasValue {
 			continue
 		}
 
-		valueFloat, valueOk := toFloat64(value)
-		weightFloat, weightOk := toFloat64(weight)
+		if !hasWeight {
+			weight = 0
+		}
 
-		if valueOk && weightOk {
-			weightedSum += valueFloat * weightFloat
-			totalWeight += weightFloat
+		weightFloat, weightOk := toFloat64(weight)
+		if !weightOk {
+			weightFloat = 0
+		}
+
+		if weightFloat > maxWeight {
+			maxWeight = weightFloat
+			mostWeighted = value
 		}
 	}
 
-	if totalWeight == 0 {
-		return mapping.DefaultValue
-	}
-
-	return weightedSum / totalWeight
+	return mostWeighted
 }
 
 func (b *BaseOperator) GetConfig(key string) (any, bool) {
@@ -280,6 +273,31 @@ func (b *BaseOperator) GetStringConfig(key string) (string, error) {
 		return "", fmt.Errorf("config key %s is not a string", key)
 	}
 	return str, nil
+}
+
+func (b *BaseOperator) GetTemplatedStringConfig(key string, attr map[string]any) (string, error) {
+	str, err := b.GetStringConfig(key)
+	if err != nil {
+		return "", err
+	}
+
+	tmpl := template.New(key).
+		Funcs(utils.CreateFuncMap()).
+		Option("missingkey=zero")
+
+	var buf bytes.Buffer
+
+	parser, err := tmpl.Parse(str)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	err = parser.Execute(&buf, attr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	return buf.String(), nil
 }
 
 func (b *BaseOperator) SetConfig(config map[string]any) {

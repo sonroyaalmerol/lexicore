@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
+	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
 type DovecotOperator struct {
@@ -25,6 +26,7 @@ type mailboxListResult struct {
 	username  string
 	mailboxes []string
 	err       error
+	identity  source.Identity
 }
 
 func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any) error {
@@ -78,7 +80,7 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 	for uid, identity := range state.Identities {
 		enriched := o.EnrichIdentity(identity, state.Groups)
 
-		aclsAny, ok := enriched.Attributes[o.getACLAttrKey()]
+		aclsAny, ok := enriched.Attributes["acls"]
 		if !ok {
 			continue
 		}
@@ -134,6 +136,7 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 				username:  identity.Username,
 				mailboxes: mailboxList,
 				err:       err,
+				identity:  identity,
 			}
 		})
 	}
@@ -146,7 +149,7 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 	for res := range mailboxListChan {
 		if res.err != nil {
 			o.LogError(fmt.Errorf("user %s (uid: %s) mailbox list failed: %w", res.username, res.uid, res.err))
-			result.ErrCount.Add(1)
+			result.RecordIdentityError(res.identity, operator.ActionNoOp, res.err)
 			continue
 		}
 
@@ -252,7 +255,6 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 			currentACL, err := o.getMailboxACLs(ctx, fullMailboxPath)
 			if err != nil {
 				o.LogError(fmt.Errorf("acl get for %s failed: %w", fullMailboxPath, err))
-				result.ErrCount.Add(1)
 				return
 			}
 
@@ -271,13 +273,18 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 			if len(diff.ToSet) > 0 || len(diff.ToRemove) > 0 {
 				if err := o.applyMailboxACLs(ctx, sharedFolder, mailboxPath, diff, state.DryRun); err != nil {
 					o.LogError(fmt.Errorf("failed to apply ACLs for %s: %w", mailboxKey, err))
-					result.ErrCount.Add(1)
 					return
 				}
 
 				usersWithChangesMu.Lock()
 				for uid := range usersAffectedByMailbox[mailboxKey] {
-					usersWithChanges[uid] = struct{}{}
+					username := state.Identities[uid].Username
+					if diff.DiffReport[username] != "" {
+						usersWithChanges[uid] = struct{}{}
+						result.RecordIdentityUpdateManual(uid, username, map[string]string{
+							fmt.Sprintf("%s/%s", sharedFolder, mailboxPath): diff.DiffReport[username],
+						})
+					}
 				}
 				usersWithChangesMu.Unlock()
 			}
@@ -285,8 +292,6 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 	}
 
 	wg2.Wait()
-
-	result.IdentitiesUpdated.Add(uint64(len(usersWithChanges)))
 
 	return result, nil
 }

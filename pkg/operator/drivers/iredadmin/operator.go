@@ -208,28 +208,26 @@ func (o *IRedAdminOperator) Sync(
 			if _, exists := existingUsers[id.Email]; !exists {
 				if state.DryRun {
 					o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", id.Email, uid)
-					result.IdentitiesCreated.Add(1)
+					result.RecordIdentityCreate(id)
 				} else {
 					if err := o.createUser(ctx, &enriched); err != nil {
 						o.LogError(fmt.Errorf("create user %s (uid: %s): %w", id.Email, uid, err))
-						result.ErrCount.Add(1)
+						result.RecordIdentityError(enriched, operator.ActionCreate, err)
 					} else {
-						result.IdentitiesCreated.Add(1)
+						result.RecordIdentityCreate(id)
 					}
 				}
 			} else {
 				userData, err := o.getUser(ctx, id.Email)
 				if err != nil {
 					o.LogError(fmt.Errorf("check user %s (uid: %s): %w", id.Email, uid, err))
-					result.ErrCount.Add(1)
+					result.RecordIdentityError(enriched, operator.ActionNoOp, err)
 					return
 				}
 
-				if skipped, err := o.updateUser(ctx, &newUserData, userData, state.DryRun); err != nil {
+				if err := o.updateUser(ctx, result, &newUserData, userData, state.DryRun); err != nil {
 					o.LogError(fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
-					result.ErrCount.Add(1)
-				} else if !skipped {
-					result.IdentitiesUpdated.Add(1)
+					result.RecordIdentityError(enriched, operator.ActionUpdate, err)
 				}
 			}
 		})
@@ -249,13 +247,13 @@ func (o *IRedAdminOperator) Sync(
 
 			if state.DryRun {
 				o.LogInfo("[DRY RUN] Would delete user %s", email)
-				result.IdentitiesDeleted.Add(1)
+				result.RecordIdentityDelete(email)
 			} else {
 				if err := o.deleteUser(ctx, email, o.keepMailboxDays); err != nil {
 					o.LogError(fmt.Errorf("delete user %s: %w", email, err))
-					result.ErrCount.Add(1)
+					result.RecordIdentityErrorManual(email, operator.ActionDelete, err)
 				} else {
-					result.IdentitiesDeleted.Add(1)
+					result.RecordIdentityDelete(email)
 				}
 			}
 		})

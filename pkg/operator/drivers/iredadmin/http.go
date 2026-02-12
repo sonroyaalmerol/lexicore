@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/utils"
 	"github.com/sethvargo/go-password/password"
@@ -33,11 +34,7 @@ func (o *IRedAdminOperator) createUser(
 	hasMailingList := false
 
 	for k, v := range id.Attributes {
-		fieldName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
-		if !hasPrefix {
-			continue
-		}
-		switch fieldName {
+		switch k {
 		case AttributeLanguage:
 			param.Set("language", fmt.Sprintf("%v", v))
 		case AttributeQuota:
@@ -108,15 +105,22 @@ func (o *IRedAdminOperator) createUser(
 
 func (o *IRedAdminOperator) updateUser(
 	ctx context.Context,
+	result *operator.SyncResult,
 	newUser *UserData,
 	current *UserData,
 	dryRun bool,
-) (bool, error) {
+) error {
 	data := url.Values{}
 
 	hasDiff := false
 	hasDiffMl := false
 
+	diff := make(map[string]string)
+	defer func() {
+		if len(diff) > 0 {
+			result.RecordIdentityUpdateManual(newUser.UID[0], newUser.Mail[0], diff)
+		}
+	}()
 	mail := getStringFromArray(current.Mail)
 
 	newCN := getStringFromArray(newUser.CN)
@@ -125,44 +129,53 @@ func (o *IRedAdminOperator) updateUser(
 		data.Set("name", newCN)
 	}
 
-	if !stringIsEqual(current.GivenName, newUser.GivenName) {
+	if !stringIsEqual(current.GivenName, newUser.GivenName) && len(newUser.GivenName) > 0 {
 		hasDiff = true
 		data.Set("givenName", strings.Join(newUser.GivenName, ","))
+		diff["givenName"] = utils.DiffString(getStringFromArray(current.GivenName), getStringFromArray(newUser.GivenName))
 	}
-	if !stringIsEqual(current.SN, newUser.SN) {
+	if !stringIsEqual(current.SN, newUser.SN) && len(newUser.SN) > 0 {
 		hasDiff = true
 		data.Set("sn", strings.Join(newUser.SN, ","))
+		diff["sn"] = utils.DiffString(getStringFromArray(current.SN), getStringFromArray(newUser.SN))
 	}
-	if !stringIsEqual(current.PreferredLanguage, newUser.PreferredLanguage) {
+	if !stringIsEqual(current.PreferredLanguage, newUser.PreferredLanguage) && len(newUser.PreferredLanguage) > 0 {
 		hasDiff = true
 		data.Set("language", strings.Join(newUser.PreferredLanguage, ","))
+		diff["language"] = utils.DiffString(getStringFromArray(current.PreferredLanguage), getStringFromArray(newUser.PreferredLanguage))
 	}
-	if !stringIsEqual(current.MailQuota, newUser.MailQuota) {
+	if !stringIsEqual(current.MailQuota, newUser.MailQuota) && len(newUser.MailQuota) > 0 {
 		hasDiff = true
 		data.Set("quota", strings.Join(newUser.MailQuota, ","))
+		diff["quota"] = utils.DiffString(getStringFromArray(current.MailQuota), getStringFromArray(newUser.MailQuota))
 	}
-	if !stringIsEqual(current.AccountStatus, newUser.AccountStatus) {
+	if !stringIsEqual(current.AccountStatus, newUser.AccountStatus) && len(newUser.AccountStatus) > 0 {
 		hasDiff = true
 		data.Set("accountStatus", strings.Join(newUser.AccountStatus, ","))
+		diff["accountStatus"] = utils.DiffString(getStringFromArray(current.AccountStatus), getStringFromArray(newUser.AccountStatus))
 	}
 	if !utils.SlicesAreEqual(current.EnabledService, newUser.EnabledService) {
 		hasDiff = true
 		data.Set("services", strings.Join(newUser.EnabledService, ","))
+		diff["services"] = utils.DiffArrString(current.EnabledService, newUser.EnabledService)
 	}
 	if !utils.SlicesAreEqual(current.MailingAliases, newUser.MailingAliases) {
 		hasDiff = true
 		data.Set("aliases", strings.Join(newUser.MailingAliases, ","))
+		diff["aliases"] = utils.DiffArrString(current.MailingAliases, newUser.MailingAliases)
 	}
 	if !utils.SlicesAreEqual(current.MailForwardingAddress, newUser.MailForwardingAddress) {
 		hasDiff = true
 		data.Set("forwarding", strings.Join(newUser.MailForwardingAddress, ","))
+		diff["forwarding"] = utils.DiffArrString(current.MailForwardingAddress, newUser.MailForwardingAddress)
 	}
 	if !utils.SlicesAreEqual(current.MailingLists, newUser.MailingLists) {
 		hasDiffMl = true
+		diff["mailingLists"] = utils.DiffArrString(current.MailingLists, newUser.MailingLists)
 	}
 
 	if !hasDiff && !hasDiffMl {
-		return true, nil
+		return nil
 	}
 
 	escaped := url.PathEscape(mail)
@@ -172,12 +185,12 @@ func (o *IRedAdminOperator) updateUser(
 		if !dryRun {
 			req, err := http.NewRequestWithContext(ctx, "PUT", path, bytes.NewBufferString(data.Encode()))
 			if err != nil {
-				return false, err
+				return err
 			}
 
 			_, err = execHttp[any](o, ctx, req)
 			if err != nil {
-				return false, err
+				return err
 			}
 		} else {
 			o.LogInfo("[DRY RUN] Would update user %s (uid: %s) | Encoded changes: %s",
@@ -186,7 +199,7 @@ func (o *IRedAdminOperator) updateUser(
 	}
 
 	if !hasDiffMl {
-		return false, nil
+		return nil
 	}
 
 	added, deleted := utils.StringArrDiff(current.MailingLists, newUser.MailingLists)
@@ -214,7 +227,7 @@ func (o *IRedAdminOperator) updateUser(
 		}
 	}
 
-	return false, nil
+	return nil
 }
 
 func (o *IRedAdminOperator) deleteUser(ctx context.Context, email string, days int) error {

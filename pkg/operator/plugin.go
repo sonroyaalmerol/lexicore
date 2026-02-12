@@ -250,61 +250,61 @@ func groupToPlugin(g *source.Group) *starlark.Dict {
 }
 
 func starlarkToSyncResult(v starlark.Value) (*SyncResult, error) {
-	dict, ok := v.(*starlark.Dict)
+	_, ok := v.(*starlark.Dict)
 	if !ok {
 		return nil, fmt.Errorf("sync must return a dict")
 	}
 
 	result := &SyncResult{}
 
-	if val, found, _ := dict.Get(starlark.String("identities_created")); found {
-		if intVal, ok := val.(starlark.Int); ok {
-			i, _ := intVal.Uint64()
-			result.IdentitiesCreated.Store(i)
-		}
-	}
+	// if val, found, _ := dict.Get(starlark.String("identities_created")); found {
+	// 	if intVal, ok := val.(starlark.Int); ok {
+	// 		i, _ := intVal.Uint64()
+	// 		result.IdentitiesCreated.Store(i)
+	// 	}
+	// }
 
-	if val, found, _ := dict.Get(starlark.String("identities_updated")); found {
-		if intVal, ok := val.(starlark.Int); ok {
-			i, _ := intVal.Uint64()
-			result.IdentitiesUpdated.Store(i)
-		}
-	}
+	// if val, found, _ := dict.Get(starlark.String("identities_updated")); found {
+	// 	if intVal, ok := val.(starlark.Int); ok {
+	// 		i, _ := intVal.Uint64()
+	// 		result.IdentitiesUpdated.Store(i)
+	// 	}
+	// }
 
-	if val, found, _ := dict.Get(starlark.String("identities_deleted")); found {
-		if intVal, ok := val.(starlark.Int); ok {
-			i, _ := intVal.Uint64()
-			result.IdentitiesDeleted.Store(i)
-		}
-	}
+	// if val, found, _ := dict.Get(starlark.String("identities_deleted")); found {
+	// 	if intVal, ok := val.(starlark.Int); ok {
+	// 		i, _ := intVal.Uint64()
+	// 		result.IdentitiesDeleted.Store(i)
+	// 	}
+	// }
 
-	if val, found, _ := dict.Get(starlark.String("groups_created")); found {
-		if intVal, ok := val.(starlark.Int); ok {
-			i, _ := intVal.Uint64()
-			result.GroupsCreated.Store(i)
-		}
-	}
+	// if val, found, _ := dict.Get(starlark.String("groups_created")); found {
+	// 	if intVal, ok := val.(starlark.Int); ok {
+	// 		i, _ := intVal.Uint64()
+	// 		result.GroupsCreated.Store(i)
+	// 	}
+	// }
 
-	if val, found, _ := dict.Get(starlark.String("groups_updated")); found {
-		if intVal, ok := val.(starlark.Int); ok {
-			i, _ := intVal.Uint64()
-			result.GroupsUpdated.Store(i)
-		}
-	}
+	// if val, found, _ := dict.Get(starlark.String("groups_updated")); found {
+	// 	if intVal, ok := val.(starlark.Int); ok {
+	// 		i, _ := intVal.Uint64()
+	// 		result.GroupsUpdated.Store(i)
+	// 	}
+	// }
 
-	if val, found, _ := dict.Get(starlark.String("groups_deleted")); found {
-		if intVal, ok := val.(starlark.Int); ok {
-			i, _ := intVal.Uint64()
-			result.GroupsDeleted.Store(i)
-		}
-	}
+	// if val, found, _ := dict.Get(starlark.String("groups_deleted")); found {
+	// 	if intVal, ok := val.(starlark.Int); ok {
+	// 		i, _ := intVal.Uint64()
+	// 		result.GroupsDeleted.Store(i)
+	// 	}
+	// }
 
-	if val, found, _ := dict.Get(starlark.String("errors_count")); found {
-		if intVal, ok := val.(starlark.Int); ok {
-			i, _ := intVal.Uint64()
-			result.ErrCount.Store(i)
-		}
-	}
+	// if val, found, _ := dict.Get(starlark.String("errors_count")); found {
+	// 	if intVal, ok := val.(starlark.Int); ok {
+	// 		i, _ := intVal.Uint64()
+	// 		result.ErrCount.Store(i)
+	// 	}
+	// }
 
 	return result, nil
 }

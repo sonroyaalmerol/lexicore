@@ -85,7 +85,7 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 		dn := dnBuilder.String()
 
 		if state.DryRun {
-			res.IdentitiesUpdated.Add(1)
+			res.RecordIdentityUpdate(id, nil)
 			continue
 		}
 
@@ -98,16 +98,16 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 		if err != nil || len(sr.Entries) == 0 {
 			if err := o.createEntry(dn, &enriched); err != nil {
 				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", dn, uid, err))
-				res.ErrCount.Add(1)
+				res.RecordIdentityError(enriched, operator.ActionUpdate, err)
 			} else {
-				res.IdentitiesCreated.Add(1)
+				res.RecordIdentityCreate(id)
 			}
 		} else {
 			if err := o.updateEntry(dn, &enriched); err != nil {
 				o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", dn, uid, err))
-				res.ErrCount.Add(1)
+				res.RecordIdentityError(enriched, operator.ActionUpdate, err)
 			} else {
-				res.IdentitiesUpdated.Add(1)
+				res.RecordIdentityUpdate(id, nil)
 			}
 		}
 	}
@@ -133,11 +133,7 @@ func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
 	}
 
 	for k, v := range id.Attributes {
-		attrName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
-		if !hasPrefix {
-			continue
-		}
-		addReq.Attribute(attrName, []string{fmt.Sprintf("%v", v)})
+		addReq.Attribute(k, []string{fmt.Sprintf("%v", v)})
 	}
 
 	return o.conn.Add(addReq)
@@ -148,11 +144,7 @@ func (o *LDAPOperator) updateEntry(dn string, id *source.Identity) error {
 	hasChanges := false
 
 	for k, v := range id.Attributes {
-		attrName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
-		if !hasPrefix {
-			continue
-		}
-		modReq.Replace(attrName, []string{fmt.Sprintf("%v", v)})
+		modReq.Replace(k, []string{fmt.Sprintf("%v", v)})
 		hasChanges = true
 	}
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
@@ -12,15 +11,10 @@ import (
 // manifest to iredadmin userdata
 func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 	u := UserData{}
+	u.UID = []string{identity.UID}
 	u.CN = []string{identity.DisplayName}
-	prefix := o.GetAttributePrefix()
-
-	for k, v := range identity.Attributes {
-		fieldName, hasPrefix := strings.CutPrefix(k, prefix)
-		if !hasPrefix {
-			continue
-		}
-
+	u.Mail = []string{identity.Email}
+	for fieldName, v := range identity.Attributes {
 		if v == nil {
 			continue
 		}
@@ -28,6 +22,9 @@ func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 		var values []string
 		switch val := v.(type) {
 		case string:
+			if val == "<no value>" {
+				continue
+			}
 			values = []string{val}
 		case int:
 			if fieldName == AttributeQuota {
@@ -53,6 +50,9 @@ func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 			for _, item := range val {
 				switch val2 := item.(type) {
 				case string:
+					if val2 == "<no value>" {
+						continue
+					}
 					values = append(values, val2)
 				case int:
 					values = append(values, strconv.Itoa(val2))
@@ -72,7 +72,7 @@ func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 				}
 			}
 		default:
-			o.LogError(fmt.Errorf("unsupported type for attribute %s: %T", k, v))
+			o.LogError(fmt.Errorf("unsupported type for attribute %s: %T", fieldName, v))
 			continue
 		}
 

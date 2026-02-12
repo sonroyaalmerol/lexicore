@@ -3,11 +3,8 @@ package ad
 import (
 	"context"
 	"fmt"
-	"strings"
-	"unicode/utf16"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
-	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/go-ldap/ldap/v3"
 )
 
@@ -26,11 +23,15 @@ func (o *ADOperator) Initialize(ctx context.Context, config map[string]any) erro
 }
 
 func (o *ADOperator) Validate(ctx context.Context) error {
-	required := []string{"url", "bindDN", "bindPassword", "userBaseDN", "domain"}
+	required := []string{"url", "bindDN", "bindPassword", "searchBaseDN", "domain"}
 	for _, req := range required {
 		if v, _ := o.GetStringConfig(req); v == "" {
 			return fmt.Errorf("ad-operator: '%s' is a required config field", req)
 		}
+	}
+
+	if err := o.Connect(ctx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -55,156 +56,82 @@ func (o *ADOperator) Connect(ctx context.Context) error {
 }
 
 func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
-	if err := o.Connect(ctx); err != nil {
-		return nil, err
-	}
-	defer o.Close()
+	searchBaseDN, _ := o.GetStringConfig("searchBaseDN")
 
 	res := &operator.SyncResult{}
-	userBaseDN, _ := o.GetStringConfig("userBaseDN")
-
 	for uid, id := range state.Identities {
 		enriched := o.EnrichIdentity(id, state.Groups)
 
-		dn := o.buildDN(enriched, userBaseDN)
+		o.LogInfo("checking user %s (uid: %s)", id.Email, uid)
 
-		if state.DryRun {
-			res.IdentitiesUpdated.Add(1)
+		attributesToSearch := []string{"dn", "memberOf"}
+		for k, v := range enriched.Attributes {
+			o.LogInfo("user has %s with value %v", k, v)
+			if k == "baseDN" || k == "dn" || k == "adGroups" {
+				continue
+			}
+			attributesToSearch = append(attributesToSearch, k)
+		}
+
+		userBaseDNRaw, ok := enriched.Attributes["baseDN"]
+		if !ok {
+			o.LogInfo("baseDN does not exist")
 			continue
 		}
 
+		userBaseDN, ok := userBaseDNRaw.(string)
+		if !ok {
+			o.LogInfo("baseDN is not a string (%T): %v", userBaseDNRaw, userBaseDNRaw)
+			continue
+		}
+
+		desiredDN := o.buildDN(enriched, userBaseDN)
+
 		search := ldap.NewSearchRequest(
-			userBaseDN,
+			searchBaseDN,
 			ldap.ScopeWholeSubtree,
 			ldap.NeverDerefAliases, 0, 0, false,
 			fmt.Sprintf("(&(objectClass=user)(sAMAccountName=%s))", enriched.Username),
-			[]string{"dn", "userAccountControl"},
+			attributesToSearch,
 			nil,
 		)
 
 		sr, err := o.conn.Search(search)
 		if err != nil {
 			o.LogError(fmt.Errorf("search failed for %s (uid: %s): %w", enriched.Username, uid, err))
-			res.ErrCount.Add(1)
+			res.RecordIdentityError(enriched, operator.ActionNoOp, err)
 			continue
 		}
 
+		var currentMemberOf []string
 		if len(sr.Entries) == 0 {
-			if err := o.createUser(dn, &enriched); err != nil {
-				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", enriched.Username, uid, err))
-				res.ErrCount.Add(1)
+			if state.DryRun {
+				o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", id.Email, uid)
 			} else {
-				res.IdentitiesCreated.Add(1)
+				if err := o.createUser(desiredDN, &enriched); err != nil {
+					o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", enriched.Username, uid, err))
+					res.RecordIdentityError(enriched, operator.ActionCreate, err)
+					continue
+				}
+				currentMemberOf = make([]string, 0)
 			}
+			res.RecordIdentityCreate(enriched)
 		} else {
-			existingDN := sr.Entries[0].DN
-			if err := o.updateUser(existingDN, &enriched); err != nil {
+			if err := o.updateUser(res, desiredDN, sr.Entries[0], &enriched, state.DryRun); err != nil {
 				o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
-				res.ErrCount.Add(1)
-			} else {
-				res.IdentitiesUpdated.Add(1)
+				res.RecordIdentityError(enriched, operator.ActionUpdate, err)
 			}
+			currentMemberOf = sr.Entries[0].GetAttributeValues("memberOf")
+		}
+
+		err = o.syncGroups(res, desiredDN, currentMemberOf, &enriched, state.DryRun)
+		if err != nil {
+			o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
+			res.RecordIdentityError(enriched, operator.ActionUpdate, fmt.Errorf("group sync failed: %w", err))
 		}
 	}
 
 	return res, nil
-}
-
-func (o *ADOperator) buildDN(id source.Identity, userBaseDN string) string {
-	cn := id.DisplayName
-	if cn == "" {
-		cn = id.Username
-	}
-	return fmt.Sprintf("CN=%s,%s", cn, userBaseDN)
-}
-
-func (o *ADOperator) createUser(dn string, id *source.Identity) error {
-	domain, _ := o.GetStringConfig("domain")
-
-	addReq := ldap.NewAddRequest(dn, nil)
-	addReq.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user"})
-	addReq.Attribute("sAMAccountName", []string{id.Username})
-
-	var upnBuilder strings.Builder
-	upnBuilder.Grow(len(id.Username) + len(domain) + 1)
-	upnBuilder.WriteString(id.Username)
-	upnBuilder.WriteByte('@')
-	upnBuilder.WriteString(domain)
-	addReq.Attribute("userPrincipalName", []string{upnBuilder.String()})
-
-	if id.Email != "" {
-		addReq.Attribute("mail", []string{id.Email})
-	}
-	if id.DisplayName != "" {
-		addReq.Attribute("displayName", []string{id.DisplayName})
-	}
-
-	for k, v := range id.Attributes {
-		attrName, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
-		if !hasPrefix {
-			continue
-		}
-		addReq.Attribute(attrName, []string{fmt.Sprintf("%v", v)})
-	}
-
-	if err := o.conn.Add(addReq); err != nil {
-		return err
-	}
-
-	if initPass, ok := o.GetStringConfig("defaultPassword"); ok == nil {
-		if err := o.setPassword(dn, initPass); err != nil {
-			return err
-		}
-	}
-
-	uacMod := ldap.NewModifyRequest(dn, nil)
-	uacMod.Replace("userAccountControl", []string{"512"})
-	return o.conn.Modify(uacMod)
-}
-
-func (o *ADOperator) setPassword(dn, password string) error {
-	quoted := make([]rune, 0, len(password)+2)
-	quoted = append(quoted, '"')
-	quoted = append(quoted, []rune(password)...)
-	quoted = append(quoted, '"')
-
-	utf16Pass := utf16.Encode(quoted)
-	b := make([]byte, len(utf16Pass)*2)
-	for i, v := range utf16Pass {
-		b[i*2] = byte(v)
-		b[i*2+1] = byte(v >> 8)
-	}
-
-	passMod := ldap.NewModifyRequest(dn, nil)
-	passMod.Replace("unicodePwd", []string{string(b)})
-	if err := o.conn.Modify(passMod); err != nil {
-		return fmt.Errorf("failed to set initial password: %w", err)
-	}
-	return nil
-}
-
-func (o *ADOperator) updateUser(dn string, id *source.Identity) error {
-	modReq := ldap.NewModifyRequest(dn, nil)
-	hasChanges := false
-
-	for k, v := range id.Attributes {
-		adKey, hasPrefix := strings.CutPrefix(k, o.GetAttributePrefix())
-		if !hasPrefix {
-			continue
-		}
-
-		val := fmt.Sprintf("%v", v)
-		if val != "" {
-			modReq.Replace(adKey, []string{val})
-			hasChanges = true
-		}
-	}
-
-	if !hasChanges {
-		return nil
-	}
-
-	return o.conn.Modify(modReq)
 }
 
 func (o *ADOperator) Close() error {

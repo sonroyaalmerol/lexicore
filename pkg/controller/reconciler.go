@@ -3,6 +3,7 @@ package controller
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
@@ -135,7 +136,17 @@ func (m *Manager) reconcileTarget(
 	identities map[string]source.Identity,
 	groups map[string]source.Group,
 ) error {
-	pipeline, err := transformer.NewPipeline(target.manifest.Spec.Transformers)
+	attrPrefix := ""
+
+	anyPrefix, ok := target.manifest.Spec.Config["attributePrefix"]
+	if ok {
+		strPrefix, ok := anyPrefix.(string)
+		if ok {
+			attrPrefix = strPrefix
+		}
+	}
+
+	pipeline, err := transformer.NewPipeline(target.manifest.Spec.Transformers, attrPrefix)
 	if err != nil {
 		return fmt.Errorf("failed to create transformer pipeline: %w", err)
 	}
@@ -186,22 +197,46 @@ func (m *Manager) reconcileTarget(
 		len(transformedGroups),
 	)
 
+	counts := result.SummaryCounts()
+	errCount := counts["TOTAL_ERRORS"]
+
+	statusMsg := "Sync completed successfully"
+	if errCount > 0 {
+		statusMsg = fmt.Sprintf("Sync completed with %d errors", errCount)
+	}
+
+	m.updateTargetStatus(
+		targetName,
+		errCount == 0,
+		statusMsg,
+		len(transformedIdentities),
+		len(transformedGroups),
+	)
+
 	m.logger.Info(
 		"Reconciliation completed",
 		zap.String("target", targetName),
 		zap.Duration("duration", time.Since(startTime)),
-		zap.Uint64("identities_created", result.IdentitiesCreated.Load()),
-		zap.Uint64("identities_updated", result.IdentitiesUpdated.Load()),
-		zap.Uint64("identities_deleted", result.IdentitiesDeleted.Load()),
-		zap.Uint64("identities_reprocessed", result.IdentitiesReprocessed.Load()),
-		zap.Uint64("groups_created", result.GroupsCreated.Load()),
-		zap.Uint64("groups_updated", result.GroupsUpdated.Load()),
-		zap.Uint64("groups_deleted", result.GroupsDeleted.Load()),
-		zap.Uint64("errors", result.ErrCount.Load()),
+		zap.Int("identities_created", counts["IDENTITY_CREATE"]),
+		zap.Int("identities_updated", counts["IDENTITY_UPDATE"]),
+		zap.Int("identities_deleted", counts["IDENTITY_DELETE"]),
+		zap.Int("group_adds", counts["IDENTITY_GROUP_ADD"]),
+		zap.Int("group_rems", counts["IDENTITY_GROUP_REMOVE"]),
+		zap.Int("errors", errCount),
 	)
 
-	if result.ErrCount.Load() > 0 {
-		return fmt.Errorf("sync completed with %d errors", result.ErrCount.Load())
+	if target.manifest.Spec.Config["generateAuditReport"] == true {
+		err = os.MkdirAll("/var/lib/lexicore/csv", os.ModeDir)
+		if err != nil {
+			m.logger.Error("audit report failed", zap.Error(err))
+			return nil
+		}
+		file, err := os.Create(fmt.Sprintf("/var/lib/lexicore/csv/audit_log_%s_%d.xls", targetName, time.Now().Unix()))
+		if err != nil {
+			m.logger.Error("audit report failed", zap.Error(err))
+			return nil
+		}
+		operator.GenerateCSV(file, result.Entries)
 	}
 
 	return nil

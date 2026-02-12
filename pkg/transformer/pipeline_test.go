@@ -70,7 +70,7 @@ func TestPipeline_Execute(t *testing.T) {
 		},
 	}
 
-	pipeline, err := NewPipeline(configs)
+	pipeline, err := NewPipeline(configs, "")
 	require.NoError(t, err)
 
 	identities := map[string]source.Identity{

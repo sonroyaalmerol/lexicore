@@ -11,10 +11,6 @@ type aclData struct {
 	Perms        map[string]struct{}
 }
 
-func (o *DovecotOperator) getACLAttrKey() string {
-	return fmt.Sprintf("%sacls", o.GetAttributePrefix())
-}
-
 func (o *DovecotOperator) mergeSharedMailAcls(acls []string) []string {
 	perms := make([]string, 0, len(acls))
 
