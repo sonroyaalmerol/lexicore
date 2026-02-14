@@ -1,5 +1,7 @@
 package utils
 
+import "slices"
+
 func SlicesAreEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -21,3 +23,30 @@ func SlicesAreEqual(a, b []string) bool {
 	return true
 }
 
+func ConcatUnique[T ~string](slices ...[]T) []T {
+	totalLen := 0
+	for _, s := range slices {
+		totalLen += len(s)
+	}
+
+	result := make([]T, 0, totalLen)
+	seen := make(map[T]struct{}, totalLen)
+
+	for _, slice := range slices {
+		for _, val := range slice {
+			if _, exists := seen[val]; !exists {
+				seen[val] = struct{}{}
+				result = append(result, val)
+			}
+		}
+	}
+
+	return result
+}
+
+func AppendUnique[T comparable](slice []T, element T) []T {
+	if slices.Contains(slice, element) {
+		return slice
+	}
+	return append(slice, element)
+}

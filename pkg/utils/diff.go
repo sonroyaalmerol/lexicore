@@ -37,6 +37,26 @@ func DiffString(old string, newS string) string {
 
 func DiffArrString(oldArr, newArr []string) string {
 	added, deleted := StringArrDiff(oldArr, newArr)
+	var toRet strings.Builder
+	for i, add := range added {
+		toRet.WriteRune('+')
+		toRet.WriteString(add)
+		if i < len(added)-1 {
+			toRet.WriteRune(' ')
+		}
+	}
 
-	return fmt.Sprintf("ADD: %s | REMOVE: %s", strings.Join(added, ","), strings.Join(deleted, ","))
+	if len(added) > 0 && len(deleted) > 0 {
+		toRet.WriteRune(' ')
+	}
+
+	for i, del := range deleted {
+		toRet.WriteRune('-')
+		toRet.WriteString(del)
+		if i < len(deleted)-1 {
+			toRet.WriteRune(' ')
+		}
+	}
+
+	return toRet.String()
 }

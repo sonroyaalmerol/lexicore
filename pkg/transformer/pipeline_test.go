@@ -12,16 +12,22 @@ import (
 
 func TestSelectorTransformer_Transform(t *testing.T) {
 	config := map[string]any{
-		"groupSelector": "admins",
+		"selectors": []any{
+			map[string]any{
+				"type":    "regex",
+				"field":   "username",
+				"pattern": "^user[13]$",
+			},
+		},
 	}
 
 	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
 
 	identities := map[string]source.Identity{
-		"user1": {Username: "user1", Groups: []string{"admins", "users"}},
-		"user2": {Username: "user2", Groups: []string{"users"}},
-		"user3": {Username: "user3", Groups: []string{"admins"}},
+		"user1": {Username: "user1"},
+		"user2": {Username: "user2"},
+		"user3": {Username: "user3"},
 	}
 
 	ctx := NewContext(context.Background(), nil)
@@ -65,7 +71,13 @@ func TestPipeline_Execute(t *testing.T) {
 			Name: "selector",
 			Type: "selector",
 			Config: map[string]any{
-				"groupSelector": "admins",
+				"selectors": []any{
+					map[string]any{
+						"type":    "strict",
+						"field":   "username",
+						"pattern": "user1",
+					},
+				},
 			},
 		},
 	}
@@ -74,8 +86,8 @@ func TestPipeline_Execute(t *testing.T) {
 	require.NoError(t, err)
 
 	identities := map[string]source.Identity{
-		"user1": {Username: "user1", Groups: []string{"admins"}, Attributes: make(map[string]any)},
-		"user2": {Username: "user2", Groups: []string{"users"}, Attributes: make(map[string]any)},
+		"user1": {Username: "user1", Attributes: make(map[string]any)},
+		"user2": {Username: "user2", Attributes: make(map[string]any)},
 	}
 
 	ctx := NewContext(context.Background(), nil)

@@ -1,14 +1,96 @@
 package dovecot
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	"codeberg.org/lexicore/lexicore/pkg/utils"
 )
 
 type aclData struct {
 	SharedFolder string
 	Mailbox      string
 	Perms        map[string]struct{}
+}
+
+func (o *DovecotOperator) expandACLPatterns(ctx context.Context, acls []string) ([]string, error) {
+	expanded := make([]string, 0, len(acls))
+
+	for _, acl := range acls {
+		if strings.ContainsAny(acl, "*?") {
+			o.LogInfo("currently expanding %s", acl)
+
+			commaIndex := strings.Index(acl, ",")
+			permsPart := ""
+
+			if commaIndex != -1 {
+				permsPart = strings.TrimSpace(acl[commaIndex:])
+				acl = strings.TrimSpace(acl[:commaIndex])
+			}
+
+			domainPart := ""
+
+			acl = strings.ReplaceAll(acl, "\\", "/")
+
+			if atIndex := strings.Index(acl, "@"); atIndex != -1 {
+				remaining := acl[atIndex:]
+				slashIndex := strings.Index(remaining, "/")
+				if slashIndex != -1 {
+					domainPart = remaining[:slashIndex]
+					acl = acl[:atIndex] + remaining[slashIndex:]
+				} else {
+					domainPart = remaining
+					acl = acl[:atIndex]
+				}
+			}
+
+			o.LogInfo("permsPart: %s, domainPart: %s, acl: %s", permsPart, domainPart, acl)
+
+			parts := strings.Split(strings.Trim(acl, "/"), "/")
+
+			if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
+				continue
+			}
+
+			sharedFolder := parts[0]
+			mailbox := "INBOX"
+			if len(parts) > 1 {
+				mailbox = strings.Join(parts[1:], "/")
+			}
+
+			parentPath := ""
+			if len(parts) > 1 {
+				parentParts := parts[1 : len(parts)-1] // Everything except the pattern part
+				if len(parentParts) > 0 {
+					parentPath = strings.Join(parentParts, "/") + "/"
+				}
+				mailbox = parts[len(parts)-1] // Just the pattern part
+			}
+
+			o.LogInfo("sharedFolder: %s, mailbox: %s", sharedFolder, mailbox)
+
+			mailboxes, err := o.listMailboxesForUser(ctx, sharedFolder, mailbox)
+			if err != nil {
+				o.LogError(fmt.Errorf("failed to expand pattern %s for user %s: %w", mailbox, sharedFolder, err))
+				continue
+			}
+
+			currentExpanded := make([]string, 0, len(mailboxes))
+			for _, mailbox := range mailboxes {
+				expandedACL := fmt.Sprintf("%s%s/%s%s%s", sharedFolder, domainPart, parentPath, mailbox, permsPart)
+				currentExpanded = append(currentExpanded, expandedACL)
+			}
+
+			o.LogInfo("expanded %s to %v", acl, currentExpanded)
+
+			expanded = utils.ConcatUnique(expanded, currentExpanded)
+		} else {
+			expanded = append(expanded, acl)
+		}
+	}
+
+	return expanded, nil
 }
 
 func (o *DovecotOperator) mergeSharedMailAcls(acls []string) []string {
@@ -31,13 +113,16 @@ func (o *DovecotOperator) mergeSharedMailAcls(acls []string) []string {
 	sharedMailAclsMap := make(map[string]*aclData)
 
 	for _, acl := range acls {
+		currentPerms := make([]string, len(perms))
+		copy(currentPerms, perms)
+
 		commaIndex := strings.LastIndex(acl, ",")
 		pathPart := acl
 		if commaIndex != -1 {
 			pathPart = acl[:commaIndex]
 			permsStr := strings.TrimSpace(acl[commaIndex+1:])
 			if len(permsStr) > 0 {
-				perms = strings.Fields(permsStr)
+				currentPerms = strings.Fields(permsStr)
 			}
 		}
 
@@ -55,12 +140,12 @@ func (o *DovecotOperator) mergeSharedMailAcls(acls []string) []string {
 		mapKey := fmt.Sprintf("%s/%s", sharedFolder, mailbox)
 
 		if existing, exists := sharedMailAclsMap[mapKey]; exists {
-			for _, p := range perms {
+			for _, p := range currentPerms {
 				existing.Perms[p] = struct{}{}
 			}
 		} else {
 			permMap := make(map[string]struct{})
-			for _, p := range perms {
+			for _, p := range currentPerms {
 				permMap[p] = struct{}{}
 			}
 			sharedMailAclsMap[mapKey] = &aclData{
@@ -85,15 +170,8 @@ func (o *DovecotOperator) mergeSharedMailAcls(acls []string) []string {
 	return result
 }
 
-func (o *DovecotOperator) parseACLString(aclStr string) (mailboxKey string, rights []string, noPropagate bool) {
+func (o *DovecotOperator) parseACLString(aclStr string) (mailboxKey string, rights []string) {
 	aclPath := aclStr
-	noPropagate = false
-
-	if strings.Contains(aclPath, "!no-propagate") {
-		noPropagate = true
-		aclPath = strings.ReplaceAll(aclPath, "!no-propagate", "")
-		aclPath = strings.TrimSpace(aclPath)
-	}
 
 	commaIndex := strings.Index(aclPath, ",")
 	if commaIndex != -1 {
@@ -119,7 +197,7 @@ func (o *DovecotOperator) parseACLString(aclStr string) (mailboxKey string, righ
 	parts := strings.Split(strings.Trim(aclPath, "/"), "/")
 
 	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
-		return "", nil, false
+		return "", nil
 	}
 
 	sharedFolder := parts[0]
@@ -129,5 +207,6 @@ func (o *DovecotOperator) parseACLString(aclStr string) (mailboxKey string, righ
 	}
 
 	mailboxKey = fmt.Sprintf("%s/%s", sharedFolder, mailbox)
-	return mailboxKey, rights, noPropagate
+
+	return mailboxKey, rights
 }

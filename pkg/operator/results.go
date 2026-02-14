@@ -192,7 +192,7 @@ func GenerateCSV(file *os.File, entries []AuditEntry) {
 			e.ResourceType,
 			e.ResourceID,
 			e.ResourceName,
-			strings.Join(diffStr, "|"),
+			strings.Join(diffStr, ","),
 			errorStr,
 		}
 

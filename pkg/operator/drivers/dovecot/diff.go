@@ -28,26 +28,33 @@ func (o *DovecotOperator) calculateMailboxDiff(
 	}
 
 	currentUserACLs := make(map[string][]string)
+	anyoneACLs := make([]string, 0, 11)
+
 	for _, acl := range currentACL.ACLs {
+		if acl.ID == "anyone" {
+			anyoneACLs = utils.ConcatUnique(anyoneACLs, acl.Rights)
+			continue
+		}
 		if email, trimmed := strings.CutPrefix(acl.ID, "user="); trimmed {
 			emailParts := strings.SplitN(email, "@", 2)
-			if len(emailParts) == 2 {
-				username := emailParts[0]
-				currentUserACLs[username] = acl.Rights
+			username := emailParts[0]
+			if strings.TrimSpace(username) == "" {
+				username = email
 			}
+			currentUserACLs[username] = acl.Rights
 		}
 	}
 
 	for username, desiredRights := range desiredUserACLs {
-		currentRights, exists := currentUserACLs[username]
-		if !exists {
+		effectiveRights := anyoneACLs
+		currentRights, ok := currentUserACLs[username]
+		if ok {
+			effectiveRights = utils.ConcatUnique(currentRights, anyoneACLs)
+		}
+
+		if !utils.SlicesAreEqual(effectiveRights, desiredRights) {
 			diff.ToSet[username] = desiredRights
-			diff.DiffReport[username] = utils.DiffArrString(currentRights, desiredRights)
-		} else {
-			if !utils.SlicesAreEqual(currentRights, desiredRights) {
-				diff.ToSet[username] = desiredRights
-				diff.DiffReport[username] = utils.DiffArrString(currentRights, desiredRights)
-			}
+			diff.DiffReport[username] = utils.DiffArrString(effectiveRights, desiredRights)
 		}
 	}
 

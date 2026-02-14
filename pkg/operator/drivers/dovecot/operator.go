@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 type DovecotOperator struct {
 	*operator.BaseOperator
 	baseURL     string
+	domain      string
 	Client      *http.Client
 	b64Password string
 }
@@ -46,6 +46,8 @@ func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any)
 		}
 	}
 
+	o.domain, _ = o.GetStringConfig("domain")
+
 	apiURL, _ := o.GetStringConfig("url")
 	o.baseURL = strings.TrimSuffix(apiURL, "/")
 
@@ -56,9 +58,11 @@ func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any)
 }
 
 func (o *DovecotOperator) Validate(ctx context.Context) error {
-	url, err := o.GetStringConfig("url")
-	if err != nil || url == "" {
-		return fmt.Errorf("dovecot: 'url' is required (e.g., http://localhost:8080/doveadm/v1)")
+	required := []string{"url", "apiKey", "domain"}
+	for _, req := range required {
+		if v, _ := o.GetStringConfig(req); v == "" {
+			return fmt.Errorf("dovecot-acl: '%s' is required", req)
+		}
 	}
 	return nil
 }
@@ -68,7 +72,6 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 
 	allMailboxes := make(map[string]struct{})
 	mailboxDesiredACLs := make(map[string]map[string][]string)
-	mailboxNoPropagate := make(map[string]bool)
 	usersAffectedByMailbox := make(map[string]map[string]struct{})
 
 	workers := o.GetConcurrency()
@@ -101,13 +104,24 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 
 		o.LogInfo("checking user %s (uid: %s)", identity.Email, uid)
 
-		desiredAcls := o.mergeSharedMailAcls(acls)
+		expandedACLs, err := o.expandACLPatterns(ctx, acls)
+		if err != nil {
+			o.LogError(fmt.Errorf("failed to expand ACL patterns for user %s: %w", identity.Username, err))
+			result.RecordIdentityError(identity, operator.ActionNoOp, err)
+			continue
+		}
+
+		desiredAcls := o.mergeSharedMailAcls(expandedACLs)
+
+		o.LogInfo("desiredAcls: %v", desiredAcls)
 
 		for _, aclStr := range desiredAcls {
-			mailboxKey, rights, noPropagate := o.parseACLString(aclStr)
+			mailboxKey, rights := o.parseACLString(aclStr)
 			if mailboxKey == "" {
 				continue
 			}
+
+			o.LogInfo("mailboxKey: %v", mailboxKey)
 
 			allMailboxes[mailboxKey] = struct{}{}
 
@@ -115,10 +129,6 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 				mailboxDesiredACLs[mailboxKey] = make(map[string][]string)
 			}
 			mailboxDesiredACLs[mailboxKey][identity.Username] = rights
-
-			if noPropagate {
-				mailboxNoPropagate[mailboxKey] = true
-			}
 
 			if usersAffectedByMailbox[mailboxKey] == nil {
 				usersAffectedByMailbox[mailboxKey] = make(map[string]struct{})
@@ -164,68 +174,6 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 		}
 	}
 
-	expandedACLs := make(map[string]map[string][]string)
-	for mailboxKey := range allMailboxes {
-		expandedACLs[mailboxKey] = make(map[string][]string)
-	}
-
-	for mailboxKey, userACLs := range mailboxDesiredACLs {
-		maps.Copy(expandedACLs[mailboxKey], userACLs)
-	}
-
-	for mailboxKey := range allMailboxes {
-		parts := strings.SplitN(mailboxKey, "/", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		sharedFolder := parts[0]
-		mailboxPath := parts[1]
-
-		if mailboxPath == "INBOX" {
-			continue
-		}
-
-		pathParts := strings.Split(mailboxPath, "/")
-		for i := len(pathParts) - 1; i > 0; i-- {
-			parentPath := strings.Join(pathParts[:i], "/")
-			parentKey := fmt.Sprintf("%s/%s", sharedFolder, parentPath)
-
-			if mailboxNoPropagate[parentKey] {
-				break
-			}
-
-			if parentACLs, exists := mailboxDesiredACLs[parentKey]; exists {
-				for username, rights := range parentACLs {
-					if _, hasExplicit := mailboxDesiredACLs[mailboxKey][username]; !hasExplicit {
-						if expandedACLs[mailboxKey] == nil {
-							expandedACLs[mailboxKey] = make(map[string][]string)
-						}
-						if _, alreadyInherited := expandedACLs[mailboxKey][username]; !alreadyInherited {
-							expandedACLs[mailboxKey][username] = rights
-						}
-					}
-				}
-			}
-		}
-
-		inboxKey := fmt.Sprintf("%s/INBOX", sharedFolder)
-		if !mailboxNoPropagate[inboxKey] {
-			if inboxACLs, exists := mailboxDesiredACLs[inboxKey]; exists {
-				for username, rights := range inboxACLs {
-					if _, hasExplicit := mailboxDesiredACLs[mailboxKey][username]; !hasExplicit {
-						if _, alreadyInherited := expandedACLs[mailboxKey][username]; !alreadyInherited {
-							if expandedACLs[mailboxKey] == nil {
-								expandedACLs[mailboxKey] = make(map[string][]string)
-							}
-							expandedACLs[mailboxKey][username] = rights
-						}
-					}
-				}
-			}
-		}
-	}
-
 	var usersWithChangesMu sync.Mutex
 	usersWithChanges := make(map[string]struct{})
 
@@ -250,15 +198,13 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 
 			sharedFolder := parts[0]
 			mailboxPath := parts[1]
-			fullMailboxPath := fmt.Sprintf("Other Users/%s", mailboxKey)
-
-			currentACL, err := o.getMailboxACLs(ctx, fullMailboxPath)
+			currentACL, err := o.getMailboxACLs(ctx, mailboxKey)
 			if err != nil {
-				o.LogError(fmt.Errorf("acl get for %s failed: %w", fullMailboxPath, err))
+				o.LogError(fmt.Errorf("acl get for %s failed: %w", mailboxKey, err))
 				return
 			}
 
-			desiredForMailbox := expandedACLs[mailboxKey]
+			desiredForMailbox := mailboxDesiredACLs[mailboxKey]
 			if desiredForMailbox == nil {
 				desiredForMailbox = make(map[string][]string)
 			}
@@ -271,7 +217,7 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 			)
 
 			if len(diff.ToSet) > 0 || len(diff.ToRemove) > 0 {
-				if err := o.applyMailboxACLs(ctx, sharedFolder, mailboxPath, diff, state.DryRun); err != nil {
+				if err := o.applyMailboxACLs(ctx, result, sharedFolder, mailboxPath, diff, state.DryRun); err != nil {
 					o.LogError(fmt.Errorf("failed to apply ACLs for %s: %w", mailboxKey, err))
 					return
 				}
@@ -298,6 +244,7 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 
 func (o *DovecotOperator) applyMailboxACLs(
 	ctx context.Context,
+	result *operator.SyncResult,
 	sharedFolder string,
 	mailboxPath string,
 	diff *MailboxDiff,
@@ -314,6 +261,9 @@ func (o *DovecotOperator) applyMailboxACLs(
 	}
 
 	for _, username := range diff.ToRemove {
+		result.RecordIdentityUpdateManual(username, username, map[string]string{
+			fmt.Sprintf("%s/%s", sharedFolder, mailboxPath): "REMOVE_ALL",
+		})
 		if isDryRun {
 			o.LogInfo("[DRY RUN] Would remove rights for %s from %s/%s", username, sharedFolder, mailboxPath)
 		} else {
