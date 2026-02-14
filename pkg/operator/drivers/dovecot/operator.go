@@ -113,15 +113,11 @@ func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (
 
 		desiredAcls := o.mergeSharedMailAcls(expandedACLs)
 
-		o.LogInfo("desiredAcls: %v", desiredAcls)
-
 		for _, aclStr := range desiredAcls {
 			mailboxKey, rights := o.parseACLString(aclStr)
 			if mailboxKey == "" {
 				continue
 			}
-
-			o.LogInfo("mailboxKey: %v", mailboxKey)
 
 			allMailboxes[mailboxKey] = struct{}{}
 

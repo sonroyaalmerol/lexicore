@@ -18,9 +18,7 @@ func (o *DovecotOperator) expandACLPatterns(ctx context.Context, acls []string) 
 	expanded := make([]string, 0, len(acls))
 
 	for _, acl := range acls {
-		if strings.ContainsAny(acl, "*?") {
-			o.LogInfo("currently expanding %s", acl)
-
+		if strings.ContainsAny(acl, "*%") {
 			commaIndex := strings.Index(acl, ",")
 			permsPart := ""
 
@@ -45,8 +43,6 @@ func (o *DovecotOperator) expandACLPatterns(ctx context.Context, acls []string) 
 				}
 			}
 
-			o.LogInfo("permsPart: %s, domainPart: %s, acl: %s", permsPart, domainPart, acl)
-
 			parts := strings.Split(strings.Trim(acl, "/"), "/")
 
 			if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
@@ -59,16 +55,9 @@ func (o *DovecotOperator) expandACLPatterns(ctx context.Context, acls []string) 
 				mailbox = strings.Join(parts[1:], "/")
 			}
 
-			parentPath := ""
 			if len(parts) > 1 {
-				parentParts := parts[1 : len(parts)-1] // Everything except the pattern part
-				if len(parentParts) > 0 {
-					parentPath = strings.Join(parentParts, "/") + "/"
-				}
-				mailbox = parts[len(parts)-1] // Just the pattern part
+				mailbox = parts[len(parts)-1]
 			}
-
-			o.LogInfo("sharedFolder: %s, mailbox: %s", sharedFolder, mailbox)
 
 			mailboxes, err := o.listMailboxesForUser(ctx, sharedFolder, mailbox)
 			if err != nil {
@@ -78,11 +67,9 @@ func (o *DovecotOperator) expandACLPatterns(ctx context.Context, acls []string) 
 
 			currentExpanded := make([]string, 0, len(mailboxes))
 			for _, mailbox := range mailboxes {
-				expandedACL := fmt.Sprintf("%s%s/%s%s%s", sharedFolder, domainPart, parentPath, mailbox, permsPart)
+				expandedACL := fmt.Sprintf("%s%s/%s%s", sharedFolder, domainPart, mailbox, permsPart)
 				currentExpanded = append(currentExpanded, expandedACL)
 			}
-
-			o.LogInfo("expanded %s to %v", acl, currentExpanded)
 
 			expanded = utils.ConcatUnique(expanded, currentExpanded)
 		} else {

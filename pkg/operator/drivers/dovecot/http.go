@@ -44,11 +44,8 @@ type DoveadmACLResponse struct {
 func (o *DovecotOperator) listMailboxesForUser(ctx context.Context, username string, pattern string) ([]string, error) {
 	payload := []DoveadmRequest{
 		{"mailboxList", map[string]any{
-			"user":          username,
-			"subscriptions": false,
-			"mailboxMask": []string{
-				pattern,
-			},
+			"user":        username,
+			"mailboxMask": []string{pattern},
 		}, ""},
 	}
 

@@ -65,8 +65,7 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*oper
 		o.LogInfo("checking user %s (uid: %s)", id.Email, uid)
 
 		attributesToSearch := []string{"dn", "memberOf"}
-		for k, v := range enriched.Attributes {
-			o.LogInfo("user has %s with value %v", k, v)
+		for k := range enriched.Attributes {
 			if k == "baseDN" || k == "dn" || k == "adGroups" {
 				continue
 			}
