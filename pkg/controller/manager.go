@@ -43,11 +43,12 @@ type ActiveSource struct {
 }
 
 type Manager struct {
-	sourceFactory   *xsync.Map[string, func() source.Source]
-	operatorFactory *xsync.Map[string, func() operator.Operator]
-	activeOperators *xsync.Map[string, *ActiveOperator]
-	activeSources   *xsync.Map[string, *ActiveSource]
-	db              *store.EtcdStore
+	sourceFactory      *xsync.Map[string, func() source.Source]
+	operatorFactory    *xsync.Map[string, func() operator.Operator]
+	activeOperators    *xsync.Map[string, *ActiveOperator]
+	activeSources      *xsync.Map[string, *ActiveSource]
+	reconcilingTargets *xsync.Map[string, bool]
+	db                 *store.EtcdStore
 
 	pluginManager *PluginManager
 
@@ -68,17 +69,18 @@ func NewManager(
 ) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
 	m := &Manager{
-		db:              db,
-		sourceFactory:   xsync.NewMap[string, func() source.Source](),
-		operatorFactory: xsync.NewMap[string, func() operator.Operator](),
-		activeOperators: xsync.NewMap[string, *ActiveOperator](),
-		activeSources:   xsync.NewMap[string, *ActiveSource](),
-		pluginManager:   newPluginManager(cfg.Server.PluginsDir),
-		queue:           make(chan reconcileTask, cfg.Workers.QueueSize),
-		cfg:             cfg,
-		logger:          logger,
-		shutdownCtx:     ctx,
-		shutdown:        cancel,
+		db:                 db,
+		sourceFactory:      xsync.NewMap[string, func() source.Source](),
+		operatorFactory:    xsync.NewMap[string, func() operator.Operator](),
+		activeOperators:    xsync.NewMap[string, *ActiveOperator](),
+		activeSources:      xsync.NewMap[string, *ActiveSource](),
+		reconcilingTargets: xsync.NewMap[string, bool](),
+		pluginManager:      newPluginManager(cfg.Server.PluginsDir),
+		queue:              make(chan reconcileTask, cfg.Workers.QueueSize),
+		cfg:                cfg,
+		logger:             logger,
+		shutdownCtx:        ctx,
+		shutdown:           cancel,
 	}
 
 	// First-party operators
@@ -395,7 +397,19 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 			}
 
 			if task.batchID != "" {
-				if err := m.reconcileBatch(task.targetName, task.batchID); err != nil {
+				if _, loaded := m.reconcilingTargets.LoadOrStore(task.targetName, true); loaded {
+					logger.Info(
+						"Skipping batch reconciliation - already in progress",
+						zap.String("source", task.targetName),
+						zap.String("batchID", task.batchID),
+					)
+					continue
+				}
+
+				err := m.reconcileBatch(task.targetName, task.batchID)
+				m.reconcilingTargets.Delete(task.targetName)
+
+				if err != nil {
 					logger.Error(
 						"Batch reconciliation failed",
 						zap.String("source", task.targetName),
@@ -404,7 +418,18 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 					)
 				}
 			} else {
-				if err := m.reconcile(task.targetName); err != nil {
+				if _, loaded := m.reconcilingTargets.LoadOrStore(task.targetName, true); loaded {
+					logger.Info(
+						"Skipping reconciliation - already in progress",
+						zap.String("target", task.targetName),
+					)
+					continue
+				}
+
+				err := m.reconcile(task.targetName)
+				m.reconcilingTargets.Delete(task.targetName)
+
+				if err != nil {
 					logger.Error(
 						"Reconciliation failed",
 						zap.String("target", task.targetName),

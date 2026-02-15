@@ -73,9 +73,9 @@ func TestPipeline_Execute(t *testing.T) {
 			Config: map[string]any{
 				"selectors": []any{
 					map[string]any{
-						"type":    "strict",
-						"field":   "username",
-						"pattern": "user1",
+						"type":  "strict",
+						"field": "username",
+						"value": "user1",
 					},
 				},
 			},

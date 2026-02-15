@@ -43,9 +43,9 @@ func TestSelectorTransformer_StrictSelector(t *testing.T) {
 	config := map[string]any{
 		"selectors": []any{
 			map[string]any{
-				"type":    "strict",
-				"field":   "username",
-				"pattern": "admin",
+				"type":  "strict",
+				"field": "username",
+				"value": "admin",
 			},
 		},
 	}
@@ -118,9 +118,9 @@ func TestSelectorTransformer_MultipleSelectors(t *testing.T) {
 	config := map[string]any{
 		"selectors": []any{
 			map[string]any{
-				"type":    "strict",
-				"field":   "username",
-				"pattern": "admin",
+				"type":  "strict",
+				"field": "username",
+				"value": "admin",
 			},
 			map[string]any{
 				"type":    "regex",
@@ -152,9 +152,9 @@ func TestSelectorTransformer_CustomAttribute(t *testing.T) {
 	config := map[string]any{
 		"selectors": []any{
 			map[string]any{
-				"type":    "strict",
-				"field":   "department",
-				"pattern": "engineering",
+				"type":  "strict",
+				"field": "department",
+				"value": "engineering",
 			},
 		},
 	}
@@ -205,8 +205,8 @@ func TestSelectorTransformer_MissingSelectorType(t *testing.T) {
 	config := map[string]any{
 		"selectors": []any{
 			map[string]any{
-				"field":   "username",
-				"pattern": "admin",
+				"field": "username",
+				"value": "admin",
 			},
 		},
 	}

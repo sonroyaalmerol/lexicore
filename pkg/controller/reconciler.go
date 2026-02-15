@@ -64,11 +64,25 @@ func (m *Manager) reconcileBatch(sourceRef, batchID string) error {
 
 	successCount := 0
 	errorCount := 0
+	skippedCount := 0
 
 	for i, target := range targets {
 		targetName := targetNames[i]
 
-		if err := m.reconcileTarget(targetName, target, identities, groups); err != nil {
+		if _, loaded := m.reconcilingTargets.LoadOrStore(targetName, true); loaded {
+			m.logger.Info(
+				"Skipping target in batch - already being reconciled",
+				zap.String("target", targetName),
+				zap.String("source", sourceRef),
+			)
+			skippedCount++
+			continue
+		}
+
+		err := m.reconcileTarget(targetName, target, identities, groups)
+		m.reconcilingTargets.Delete(targetName)
+
+		if err != nil {
 			m.logger.Error(
 				"Target reconciliation failed in batch",
 				zap.String("target", targetName),
@@ -88,6 +102,7 @@ func (m *Manager) reconcileBatch(sourceRef, batchID string) error {
 		zap.String("batchID", batchID),
 		zap.Int("successful", successCount),
 		zap.Int("failed", errorCount),
+		zap.Int("skipped", skippedCount),
 		zap.Duration("totalDuration", time.Since(startTime)),
 	)
 
@@ -95,7 +110,7 @@ func (m *Manager) reconcileBatch(sourceRef, batchID string) error {
 		return fmt.Errorf(
 			"batch reconciliation completed with %d/%d failures",
 			errorCount,
-			len(targets),
+			len(targets)-skippedCount,
 		)
 	}
 
