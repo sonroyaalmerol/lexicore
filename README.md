@@ -1,5 +1,7 @@
 # Lexicore
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sonroyaalmerol/lexicore)
+
 Lexicore is an extensible identity orchestration engine. Built on a state-based reconciliation loop, Lexicore synchronizes identities from various sources to downstream service providers, ensuring your infrastructure reflects your central identity provider's state.
 
 By using declarative YAML manifests and a Kubernetes-style API, Lexicore allows you to define complex selection, mapping, and templating logic to provision accounts across disparate systems like mail servers, Unix systems, and SaaS platforms.
