@@ -18,12 +18,12 @@ By using declarative YAML manifests and a Kubernetes-style API, Lexicore allows 
 
 ---
 
-## Documentation
+## Documentation (todo)
 
-- [Architecture](docs/architecture.md)
-- [Configuration](docs/configuration.md)
-- [Plugins (Starlark)](docs/plugins.md)
-- [Manifest Spec](docs/spec.md)
+- Architecture
+- Configuration
+- Plugins
+- Manifest Spec
 
 ---
 
@@ -72,18 +72,13 @@ metadata:
   name: email-provisioning
 spec:
   sourceRef: corporate-ldap
-  operator: dovecot
+  operator: dovecot-acl
   transformers:
-    - name: engineering-only
-      type: selector
-      config:
-        groupSelector: developers
     - name: path-templates
       type: template
       config:
         templates:
-          maildir: "/var/vmail/{{.Username}}/"
-          displayName: "{{.Attributes.firstName}} {{.Attributes.lastName}}"
+          acl: "test@sgl.com/INBOX,lookup read write-seen write-deleted"
 ```
 
 ---
