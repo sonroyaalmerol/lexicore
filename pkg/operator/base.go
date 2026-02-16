@@ -2,6 +2,7 @@ package operator
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"html/template"
 	"math"
@@ -22,6 +23,7 @@ type BaseOperator struct {
 
 	groupAttributeMappings []GroupAttributeMapping
 	attrPrefix             *string
+	limiterOnce            sync.Once
 }
 
 func NewBaseOperator(name string, logger *zap.Logger) *BaseOperator {
@@ -50,18 +52,16 @@ func (b *BaseOperator) GetConcurrency() int {
 }
 
 func (b *BaseOperator) GetLimiter() *rate.Limiter {
-	if b.limiter != nil {
-		return b.limiter
-	}
-
-	rateLimit := 50.0
-	if rl, ok := b.GetConfig("rateLimit"); ok {
-		if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
-			rateLimit = rlFloat
+	b.limiterOnce.Do(func() {
+		rateLimit := 50.0
+		if rl, ok := b.GetConfig("rateLimit"); ok {
+			if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
+				rateLimit = rlFloat
+			}
 		}
-	}
 
-	b.limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
+		b.limiter = rate.NewLimiter(rate.Limit(rateLimit), int(rateLimit))
+	})
 
 	return b.limiter
 }
@@ -91,6 +91,13 @@ func (b *BaseOperator) GetGroupAttributeMappings() []GroupAttributeMapping {
 					DefaultValue:    m["defaultValue"],
 					WeightAttribute: getString(m, "weightAttribute"),
 				}
+
+				if !b.isValidAggregationMode(mapping.AggregationMode) {
+					b.LogWarn("Invalid aggregation mode '%s' for mapping %s -> %s, defaulting to 'first'",
+						mapping.AggregationMode, mapping.SourceAttribute, mapping.TargetAttribute)
+					mapping.AggregationMode = "first"
+				}
+
 				mappings = append(mappings, mapping)
 			}
 		}
@@ -99,6 +106,20 @@ func (b *BaseOperator) GetGroupAttributeMappings() []GroupAttributeMapping {
 	b.groupAttributeMappings = mappings
 
 	return mappings
+}
+
+func (b *BaseOperator) isValidAggregationMode(mode string) bool {
+	validModes := map[string]bool{
+		"first":        true,
+		"last":         true,
+		"max":          true,
+		"min":          true,
+		"append":       true,
+		"uniqueAppend": true,
+		"weighted":     true,
+		"override":     true,
+	}
+	return validModes[mode]
 }
 
 func (b *BaseOperator) EnrichIdentity(
@@ -129,14 +150,12 @@ func (b *BaseOperator) applyMapping(
 ) {
 	targetKey := mapping.TargetAttribute
 
-	if _, exists := identity.Attributes[targetKey]; exists {
+	_, exists := identity.Attributes[targetKey]
+
+	if exists {
 		switch mapping.AggregationMode {
-		case "append", "uniqueAppend":
-			// Continue to append
-		case "override":
-			// Continue to override
+		case "append", "uniqueAppend", "override":
 		default:
-			// Skip for other modes
 			return
 		}
 	}
@@ -169,7 +188,10 @@ func (b *BaseOperator) applyMapping(
 	case "first":
 		identity.Attributes[targetKey] = values[0]
 
-	case "last", "override":
+	case "last":
+		identity.Attributes[targetKey] = values[len(values)-1]
+
+	case "override":
 		identity.Attributes[targetKey] = values[len(values)-1]
 
 	case "max":
@@ -192,7 +214,7 @@ func (b *BaseOperator) applyMapping(
 			}
 
 			for _, v := range values {
-				if _, exists := seen[v]; !exists {
+				if _, existsInSeen := seen[v]; !existsInSeen {
 					existing = append(existing, v)
 					seen[v] = struct{}{}
 				}
@@ -206,9 +228,15 @@ func (b *BaseOperator) applyMapping(
 		}
 
 	case "weighted":
-		identity.Attributes[targetKey] = b.getWeightedValue(identity, allGroups, mapping)
+		weightedVal := b.getWeightedValue(identity, allGroups, mapping)
+		if weightedVal != nil {
+			identity.Attributes[targetKey] = weightedVal
+		} else if mapping.DefaultValue != nil {
+			identity.Attributes[targetKey] = mapping.DefaultValue
+		}
 
 	default:
+		b.LogWarn("Unknown aggregation mode '%s', using first value", mapping.AggregationMode)
 		identity.Attributes[targetKey] = values[0]
 	}
 }
@@ -223,7 +251,8 @@ func (b *BaseOperator) getWeightedValue(
 	}
 
 	var mostWeighted any
-	var maxWeight float64 = math.MinInt64
+	maxWeight := -math.MaxFloat64
+	found := false
 
 	for _, groupKey := range identity.Groups {
 		group, ok := allGroups[groupKey]
@@ -238,19 +267,22 @@ func (b *BaseOperator) getWeightedValue(
 			continue
 		}
 
-		if !hasWeight {
-			weight = 0
+		weightFloat := 0.0
+		if hasWeight {
+			if wf, ok := toFloat64(weight); ok {
+				weightFloat = wf
+			}
 		}
 
-		weightFloat, weightOk := toFloat64(weight)
-		if !weightOk {
-			weightFloat = 0
-		}
-
-		if weightFloat > maxWeight {
+		if !found || weightFloat > maxWeight {
 			maxWeight = weightFloat
 			mostWeighted = value
+			found = true
 		}
+	}
+
+	if !found {
+		return nil
 	}
 
 	return mostWeighted
@@ -330,3 +362,21 @@ func getString(m map[string]any, key string) string {
 	}
 	return ""
 }
+
+func (b *BaseOperator) PartialSync(ctx context.Context, state *PartialSyncState) (*SyncResult, error) {
+	return nil, fmt.Errorf("partial sync not implemented, use full sync instead")
+}
+
+func (b *BaseOperator) ShouldSkipUnchangedSync() bool {
+	skipUnchanged, ok := b.GetConfig("skipUnchangedSync")
+	if !ok {
+		return false
+	}
+
+	if boolVal, ok := skipUnchanged.(bool); ok {
+		return boolVal
+	}
+
+	return false
+}
+

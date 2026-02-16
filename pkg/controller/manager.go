@@ -25,6 +25,23 @@ type reconcileTask struct {
 	targetName string
 	immediate  bool
 	batchID    string
+
+	// For partial sync
+	partialSync  bool
+	identityUIDs []string
+	groupGIDs    []string
+}
+
+type webhookReconcileTask struct {
+	sourceName string
+	event      *source.WebhookEvent
+}
+
+type pendingUpdate struct {
+	identities map[string]bool
+	groups     map[string]bool
+	mu         sync.Mutex
+	timer      *time.Timer
 }
 
 type ActiveOperator struct {
@@ -59,6 +76,11 @@ type Manager struct {
 	wg          sync.WaitGroup
 	shutdownCtx context.Context
 	shutdown    context.CancelFunc
+
+	webhookQueue          chan webhookReconcileTask
+	pendingWebhookUpdates *xsync.Map[string, *pendingUpdate]
+
+	sourceDataHashes *xsync.Map[string, string]
 }
 
 func NewManager(
@@ -69,18 +91,21 @@ func NewManager(
 ) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
 	m := &Manager{
-		db:                 db,
-		sourceFactory:      xsync.NewMap[string, func() source.Source](),
-		operatorFactory:    xsync.NewMap[string, func() operator.Operator](),
-		activeOperators:    xsync.NewMap[string, *ActiveOperator](),
-		activeSources:      xsync.NewMap[string, *ActiveSource](),
-		reconcilingTargets: xsync.NewMap[string, bool](),
-		pluginManager:      newPluginManager(cfg.Server.PluginsDir),
-		queue:              make(chan reconcileTask, cfg.Workers.QueueSize),
-		cfg:                cfg,
-		logger:             logger,
-		shutdownCtx:        ctx,
-		shutdown:           cancel,
+		db:                    db,
+		sourceFactory:         xsync.NewMap[string, func() source.Source](),
+		operatorFactory:       xsync.NewMap[string, func() operator.Operator](),
+		activeOperators:       xsync.NewMap[string, *ActiveOperator](),
+		activeSources:         xsync.NewMap[string, *ActiveSource](),
+		reconcilingTargets:    xsync.NewMap[string, bool](),
+		pluginManager:         newPluginManager(cfg.Server.PluginsDir),
+		queue:                 make(chan reconcileTask, cfg.Workers.QueueSize),
+		cfg:                   cfg,
+		logger:                logger,
+		shutdownCtx:           ctx,
+		shutdown:              cancel,
+		webhookQueue:          make(chan webhookReconcileTask, cfg.Workers.QueueSize),
+		pendingWebhookUpdates: xsync.NewMap[string, *pendingUpdate](),
+		sourceDataHashes:      xsync.NewMap[string, string](),
 	}
 
 	// First-party operators
@@ -122,6 +147,10 @@ func NewManager(
 	go m.runWatchLoop("identitysources")
 	go m.runWatchLoop("synctargets")
 	go m.runLeaderElection(cfg.Etcd.Name)
+
+	m.wg.Go(func() {
+		m.webhookProcessor(ctx)
+	})
 
 	return m
 }
@@ -415,6 +444,32 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 						zap.String("source", task.targetName),
 						zap.String("batchID", task.batchID),
 						zap.Error(err),
+					)
+				}
+			} else if task.partialSync {
+				if _, loaded := m.reconcilingTargets.LoadOrStore(task.targetName, true); loaded {
+					logger.Info(
+						"Skipping partial reconciliation - already in progress",
+						zap.String("target", task.targetName),
+					)
+					continue
+				}
+
+				err := m.reconcilePartial(task.targetName, task.identityUIDs, task.groupGIDs)
+				m.reconcilingTargets.Delete(task.targetName)
+
+				if err != nil {
+					logger.Error(
+						"Partial reconciliation failed",
+						zap.String("target", task.targetName),
+						zap.Error(err),
+					)
+				} else {
+					logger.Debug(
+						"Partial reconciliation completed",
+						zap.String("target", task.targetName),
+						zap.Int("identities", len(task.identityUIDs)),
+						zap.Int("groups", len(task.groupGIDs)),
 					)
 				}
 			} else {

@@ -2,7 +2,6 @@ package source
 
 import (
 	"context"
-	"time"
 )
 
 type SourceData struct {
@@ -30,24 +29,6 @@ type Group struct {
 	Deleted     bool
 }
 
-type Changes struct {
-	ModifiedIdentities []Identity
-	DeletedIdentities  []string // UIDs
-	ModifiedGroups     []Group
-	DeletedGroups      []string // GIDs
-	FullSync           bool     // If true, this is a full snapshot
-}
-
-type ChangeDetector interface {
-	// SupportsChangeDetection returns true if the source can efficiently
-	// detect changes since a given timestamp
-	SupportsChangeDetection() bool
-
-	// GetChangesSince returns only items modified after the given time
-	// Returns the changes and the current server timestamp
-	GetChangesSince(ctx context.Context, since time.Time) (*Changes, time.Time, error)
-}
-
 type Source interface {
 	Name() string
 	Initialize(ctx context.Context, config map[string]any) error
@@ -66,17 +47,10 @@ type Source interface {
 	Close() error
 }
 
-type Event struct {
-	Type      EventType // Add, Update, Delete
-	Identity  *Identity
-	Group     *Group
-	Timestamp int64
+type PartialFetchCapable interface {
+	// GetIdentitiesByUIDs fetches specific identities by UID
+	GetIdentitiesByUIDs(ctx context.Context, uids []string) (map[string]Identity, error)
+
+	// GetGroupsByGIDs fetches specific groups by GID
+	GetGroupsByGIDs(ctx context.Context, gids []string) (map[string]Group, error)
 }
-
-type EventType string
-
-const (
-	EventAdd    EventType = "Add"
-	EventUpdate EventType = "Update"
-	EventDelete EventType = "Delete"
-)

@@ -3,7 +3,6 @@ package ldap
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sync"
 	"time"
 
@@ -184,131 +183,6 @@ func (l *LDAPSource) Close() error {
 	return nil
 }
 
-func (l *LDAPSource) SupportsChangeDetection() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.supportsChangeDetection
-}
-
-func (l *LDAPSource) GetChangesSince(
-	ctx context.Context,
-	since time.Time,
-) (*source.Changes, time.Time, error) {
-	l.mu.Lock()
-	config := l.config
-	conn := l.conn
-	l.mu.Unlock()
-
-	if conn == nil {
-		return nil, time.Time{}, fmt.Errorf("connection not established")
-	}
-
-	if !l.supportsChangeDetection {
-		return nil, time.Time{}, fmt.Errorf("change detection not enabled")
-	}
-
-	currentTime := time.Now()
-	changes := &source.Changes{
-		ModifiedIdentities: make([]source.Identity, 0),
-		DeletedIdentities:  make([]string, 0),
-		ModifiedGroups:     make([]source.Group, 0),
-		DeletedGroups:      make([]string, 0),
-		FullSync:           false,
-	}
-
-	if since.IsZero() {
-		changes.FullSync = true
-		return changes, currentTime, nil
-	}
-
-	// LDAP uses format: YYYYMMDDHHMMSSz
-	sinceStr := since.UTC().Format("20060102150405.0Z")
-
-	userFilter := fmt.Sprintf(
-		"(&%s(|(%s>=%s)(%s>=%s)))",
-		config.UserSelector,
-		config.ModifyTimestampAttr,
-		sinceStr,
-		config.CreateTimestampAttr,
-		sinceStr,
-	)
-
-	userAttrs := append([]string{}, config.UserAttributes...)
-	userAttrs = appendIfMissing(userAttrs, config.ModifyTimestampAttr)
-	userAttrs = appendIfMissing(userAttrs, config.CreateTimestampAttr)
-
-	userSearchRequest := ldap.NewSearchRequest(
-		config.BaseDN,
-		ldap.ScopeWholeSubtree,
-		ldap.NeverDerefAliases,
-		0, 0, false,
-		userFilter,
-		userAttrs,
-		nil,
-	)
-
-	userResults, err := conn.Search(userSearchRequest)
-	if err != nil {
-		// If the filter fails, fall back to full sync
-		changes.FullSync = true
-		return changes, currentTime, nil
-	}
-
-	for _, entry := range userResults.Entries {
-		identity := l.mapper.mapIdentity(entry)
-		changes.ModifiedIdentities = append(changes.ModifiedIdentities, identity)
-	}
-
-	// Search for modified/created groups
-	groupFilter := fmt.Sprintf(
-		"(&%s(|(%s>=%s)(%s>=%s)))",
-		config.GroupSelector,
-		config.ModifyTimestampAttr,
-		sinceStr,
-		config.CreateTimestampAttr,
-		sinceStr,
-	)
-
-	groupAttrs := append([]string{}, config.GroupAttributes...)
-	groupAttrs = appendIfMissing(groupAttrs, config.ModifyTimestampAttr)
-	groupAttrs = appendIfMissing(groupAttrs, config.CreateTimestampAttr)
-
-	groupSearchRequest := ldap.NewSearchRequest(
-		config.BaseDN,
-		ldap.ScopeWholeSubtree,
-		ldap.NeverDerefAliases,
-		0, 0, false,
-		groupFilter,
-		groupAttrs,
-		nil,
-	)
-
-	groupResults, err := conn.Search(groupSearchRequest)
-	if err != nil {
-		// If the filter fails, fall back to full sync
-		changes.FullSync = true
-		return changes, currentTime, nil
-	}
-
-	for _, entry := range groupResults.Entries {
-		group := l.mapper.mapGroup(entry)
-		changes.ModifiedGroups = append(changes.ModifiedGroups, group)
-	}
-
-	// Note: LDAP doesn't provide easy deletion detection without tombstone support
-	// or persistent search. For basic change detection, we only track modifications.
-	// Deletions will be detected by the cache diff when doing periodic full syncs.
-	// - Persistent Search (RFC 3673)
-	// - Content Sync Operation (RFC 4533)
-	// - Tombstone tracking if available
-
-	l.mu.Lock()
-	l.lastSyncTime = currentTime
-	l.mu.Unlock()
-
-	return changes, currentTime, nil
-}
-
 func (l *LDAPSource) identityKey(identity source.Identity) string {
 	if identity.UID != "" {
 		return identity.UID
@@ -324,12 +198,4 @@ func (l *LDAPSource) groupKey(group source.Group) string {
 		return group.GID
 	}
 	return group.Name
-}
-
-func appendIfMissing(slice []string, item string) []string {
-	if slices.Contains(slice, item) {
-		return slice
-	}
-
-	return append(slice, item)
 }

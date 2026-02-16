@@ -142,6 +142,49 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 			return
 		}
 
+		if len(parts) == 2 && parts[1] == "webhook" {
+			if r.Method != http.MethodPost {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+
+			payload, err := io.ReadAll(r.Body)
+			if err != nil {
+				logger.Error("Failed to read webhook payload",
+					zap.String("source", sourceName),
+					zap.Error(err))
+				http.Error(w, "Failed to read payload", http.StatusBadRequest)
+				return
+			}
+			defer r.Body.Close()
+
+			logger.Info("Received webhook",
+				zap.String("source", sourceName),
+				zap.String("remote_addr", r.RemoteAddr),
+				zap.Int("payload_size", len(payload)))
+
+			if err := mgr.ProcessWebhook(sourceName, payload); err != nil {
+				logger.Error("Failed to process webhook",
+					zap.String("source", sourceName),
+					zap.Error(err))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{
+					"status": "error",
+					"error":  err.Error(),
+				})
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "accepted",
+				"source": sourceName,
+			})
+			return
+		}
+
 		http.Error(w, "Not found", http.StatusNotFound)
 	})
 

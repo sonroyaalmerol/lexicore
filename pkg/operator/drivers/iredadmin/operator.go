@@ -8,7 +8,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
@@ -137,130 +136,6 @@ func (o *IRedAdminOperator) login(ctx context.Context) error {
 		return fmt.Errorf("iredadmin login failed: %s", apiResp.Msg)
 	}
 	return nil
-}
-
-func (o *IRedAdminOperator) Sync(
-	ctx context.Context,
-	state *operator.SyncState,
-) (*operator.SyncResult, error) {
-	if err := o.login(ctx); err != nil {
-		return nil, err
-	}
-
-	currentUsers, err := o.getUsers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	existingUsers := make(map[string]struct{})
-	toDelete := make(map[string]struct{})
-	for _, mail := range currentUsers {
-		existingUsers[mail] = struct{}{}
-		if o.deleteOnDelete {
-			toDelete[mail] = struct{}{}
-		}
-	}
-
-	workers := o.GetConcurrency()
-	result := &operator.SyncResult{}
-
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
-
-	for uid, id := range state.Identities {
-		if id.Email == "" || id.Disabled {
-			continue
-		}
-
-		if !o.deleteOnDelete {
-			// toDelete is empty
-			if o.deleteOnDisable && id.Disabled {
-				toDelete[id.Email] = struct{}{}
-			}
-		} else {
-			// toDelete contains all existing email users
-			if !o.deleteOnDisable {
-				delete(toDelete, id.Email)
-			} else {
-				if !id.Disabled {
-					delete(toDelete, id.Email)
-				} else {
-					continue
-				}
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			return result, ctx.Err()
-		default:
-		}
-
-		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			enriched := o.EnrichIdentity(id, state.Groups)
-			newUserData := o.identityToUser(enriched)
-
-			o.LogInfo("checking user %s (uid: %s)", id.Email, uid)
-
-			if _, exists := existingUsers[id.Email]; !exists {
-				if state.DryRun {
-					o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", id.Email, uid)
-					result.RecordIdentityCreate(id)
-				} else {
-					if err := o.createUser(ctx, &enriched); err != nil {
-						o.LogError(fmt.Errorf("create user %s (uid: %s): %w", id.Email, uid, err))
-						result.RecordIdentityError(enriched, operator.ActionCreate, err)
-					} else {
-						result.RecordIdentityCreate(id)
-					}
-				}
-			} else {
-				userData, err := o.getUser(ctx, id.Email)
-				if err != nil {
-					o.LogError(fmt.Errorf("check user %s (uid: %s): %w", id.Email, uid, err))
-					result.RecordIdentityError(enriched, operator.ActionNoOp, err)
-					return
-				}
-
-				if err := o.updateUser(ctx, result, &newUserData, userData, state.DryRun); err != nil {
-					o.LogError(fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
-					result.RecordIdentityError(enriched, operator.ActionUpdate, err)
-				}
-			}
-		})
-	}
-
-	for email := range toDelete {
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			return result, ctx.Err()
-		default:
-		}
-
-		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			if state.DryRun {
-				o.LogInfo("[DRY RUN] Would delete user %s", email)
-				result.RecordIdentityDelete(email)
-			} else {
-				if err := o.deleteUser(ctx, email, o.keepMailboxDays); err != nil {
-					o.LogError(fmt.Errorf("delete user %s: %w", email, err))
-					result.RecordIdentityErrorManual(email, operator.ActionDelete, err)
-				} else {
-					result.RecordIdentityDelete(email)
-				}
-			}
-		})
-	}
-	wg.Wait()
-
-	return result, nil
 }
 
 func (o *IRedAdminOperator) Close() error {

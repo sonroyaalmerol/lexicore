@@ -6,27 +6,18 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
-	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
 type DovecotOperator struct {
 	*operator.BaseOperator
-	baseURL     string
-	domain      string
-	Client      *http.Client
-	b64Password string
-}
-
-type mailboxListResult struct {
-	uid       string
-	username  string
-	mailboxes []string
-	err       error
-	identity  source.Identity
+	baseURL      string
+	domain       string
+	Client       *http.Client
+	b64Password  string
+	ignoreAnyone bool
 }
 
 func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any) error {
@@ -42,7 +33,7 @@ func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any)
 				MaxIdleConnsPerHost: 20,
 				IdleConnTimeout:     90 * time.Second,
 			},
-			Timeout: 30 * time.Second,
+			Timeout: 120 * time.Second,
 		}
 	}
 
@@ -54,6 +45,14 @@ func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any)
 	apiKey, _ := o.GetStringConfig("apiKey")
 	o.b64Password = base64.URLEncoding.EncodeToString([]byte(apiKey))
 
+	anyone, hasAnyone := o.GetConfig("ignoreAnyone")
+	if hasAnyone {
+		var ok bool
+		o.ignoreAnyone, ok = anyone.(bool)
+		if !ok {
+			o.ignoreAnyone = false
+		}
+	}
 	return nil
 }
 
@@ -65,177 +64,6 @@ func (o *DovecotOperator) Validate(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (o *DovecotOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
-	result := &operator.SyncResult{}
-
-	allMailboxes := make(map[string]struct{})
-	mailboxDesiredACLs := make(map[string]map[string][]string)
-	usersAffectedByMailbox := make(map[string]map[string]struct{})
-
-	workers := o.GetConcurrency()
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
-
-	mailboxListChan := make(chan mailboxListResult, len(state.Identities))
-
-	for uid, identity := range state.Identities {
-		enriched := o.EnrichIdentity(identity, state.Groups)
-
-		aclsAny, ok := enriched.Attributes["acls"]
-		if !ok {
-			continue
-		}
-
-		aclsAnyArr, isArr := aclsAny.([]any)
-		if !isArr {
-			continue
-		}
-
-		acls := make([]string, 0, len(aclsAnyArr))
-		for _, anyVal := range aclsAnyArr {
-			strVal, isStr := anyVal.(string)
-			if !isStr {
-				continue
-			}
-			acls = append(acls, strVal)
-		}
-
-		o.LogInfo("checking user %s (uid: %s)", identity.Email, uid)
-
-		expandedACLs, err := o.expandACLPatterns(ctx, acls)
-		if err != nil {
-			o.LogError(fmt.Errorf("failed to expand ACL patterns for user %s: %w", identity.Username, err))
-			result.RecordIdentityError(identity, operator.ActionNoOp, err)
-			continue
-		}
-
-		desiredAcls := o.mergeSharedMailAcls(expandedACLs)
-
-		for _, aclStr := range desiredAcls {
-			mailboxKey, rights := o.parseACLString(aclStr)
-			if mailboxKey == "" {
-				continue
-			}
-
-			allMailboxes[mailboxKey] = struct{}{}
-
-			if mailboxDesiredACLs[mailboxKey] == nil {
-				mailboxDesiredACLs[mailboxKey] = make(map[string][]string)
-			}
-			mailboxDesiredACLs[mailboxKey][identity.Username] = rights
-
-			if usersAffectedByMailbox[mailboxKey] == nil {
-				usersAffectedByMailbox[mailboxKey] = make(map[string]struct{})
-			}
-			usersAffectedByMailbox[mailboxKey][uid] = struct{}{}
-		}
-
-		wg.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			mailboxList, err := o.getAllNonPersonalMailbox(ctx, identity.Username)
-			mailboxListChan <- mailboxListResult{
-				uid:       uid,
-				username:  identity.Username,
-				mailboxes: mailboxList,
-				err:       err,
-				identity:  identity,
-			}
-		})
-	}
-
-	go func() {
-		wg.Wait()
-		close(mailboxListChan)
-	}()
-
-	for res := range mailboxListChan {
-		if res.err != nil {
-			o.LogError(fmt.Errorf("user %s (uid: %s) mailbox list failed: %w", res.username, res.uid, res.err))
-			result.RecordIdentityError(res.identity, operator.ActionNoOp, res.err)
-			continue
-		}
-
-		for _, fullMailbox := range res.mailboxes {
-			trimmed := strings.TrimPrefix(fullMailbox, "Other Users/")
-			allMailboxes[trimmed] = struct{}{}
-
-			if usersAffectedByMailbox[trimmed] == nil {
-				usersAffectedByMailbox[trimmed] = make(map[string]struct{})
-			}
-			usersAffectedByMailbox[trimmed][res.uid] = struct{}{}
-		}
-	}
-
-	var usersWithChangesMu sync.Mutex
-	usersWithChanges := make(map[string]struct{})
-
-	var wg2 sync.WaitGroup
-
-	for mailboxKey := range allMailboxes {
-		select {
-		case <-ctx.Done():
-			wg2.Wait()
-			return result, ctx.Err()
-		default:
-		}
-
-		wg2.Go(func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			parts := strings.SplitN(mailboxKey, "/", 2)
-			if len(parts) != 2 {
-				return
-			}
-
-			sharedFolder := parts[0]
-			mailboxPath := parts[1]
-			currentACL, err := o.getMailboxACLs(ctx, mailboxKey)
-			if err != nil {
-				o.LogError(fmt.Errorf("acl get for %s failed: %w", mailboxKey, err))
-				return
-			}
-
-			desiredForMailbox := mailboxDesiredACLs[mailboxKey]
-			if desiredForMailbox == nil {
-				desiredForMailbox = make(map[string][]string)
-			}
-
-			diff := o.calculateMailboxDiff(
-				sharedFolder,
-				mailboxPath,
-				currentACL,
-				desiredForMailbox,
-			)
-
-			if len(diff.ToSet) > 0 || len(diff.ToRemove) > 0 {
-				if err := o.applyMailboxACLs(ctx, result, sharedFolder, mailboxPath, diff, state.DryRun); err != nil {
-					o.LogError(fmt.Errorf("failed to apply ACLs for %s: %w", mailboxKey, err))
-					return
-				}
-
-				usersWithChangesMu.Lock()
-				for uid := range usersAffectedByMailbox[mailboxKey] {
-					username := state.Identities[uid].Username
-					if diff.DiffReport[username] != "" {
-						usersWithChanges[uid] = struct{}{}
-						result.RecordIdentityUpdateManual(uid, username, map[string]string{
-							fmt.Sprintf("%s/%s", sharedFolder, mailboxPath): diff.DiffReport[username],
-						})
-					}
-				}
-				usersWithChangesMu.Unlock()
-			}
-		})
-	}
-
-	wg2.Wait()
-
-	return result, nil
 }
 
 func (o *DovecotOperator) applyMailboxACLs(

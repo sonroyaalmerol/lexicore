@@ -9,12 +9,13 @@ import (
 )
 
 type Config struct {
-	Server            ServerConfig  `yaml:"server" json:"server"`
-	Logging           LoggingConfig `yaml:"logging" json:"logging"`
-	Metrics           MetricsConfig `yaml:"metrics" json:"metrics"`
-	Etcd              EtcdConfig    `yaml:"etcd" json:"etcd"`
-	DefaultSyncPeriod time.Duration `yaml:"defaultSyncPeriod" json:"defaultSyncPeriod" envconfig:"DEFAULT_SYNC_PERIOD"`
-	Workers           WorkersConfig `yaml:"workers" json:"workers"`
+	Server                ServerConfig  `yaml:"server" json:"server"`
+	Logging               LoggingConfig `yaml:"logging" json:"logging"`
+	Metrics               MetricsConfig `yaml:"metrics" json:"metrics"`
+	Etcd                  EtcdConfig    `yaml:"etcd" json:"etcd"`
+	DefaultSyncPeriod     time.Duration `yaml:"defaultSyncPeriod" json:"defaultSyncPeriod" envconfig:"DEFAULT_SYNC_PERIOD"`
+	Workers               WorkersConfig `yaml:"workers" json:"workers"`
+	WebhookDebounceWindow time.Duration `yaml:"webhookDebounceWindow"`
 }
 
 type ServerConfig struct {
