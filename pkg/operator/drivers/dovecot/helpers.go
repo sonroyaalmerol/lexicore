@@ -8,15 +8,21 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
-func (o *DovecotOperator) expandACLPatterns(ctx context.Context, acls []*ACL) ([]*ACL, error) {
+func (o *DovecotOperator) expandACLPatterns(ctx context.Context, syncCtx *syncContext, acls []*ACL) ([]*ACL, error) {
 	expanded := make([]*ACL, 0, len(acls))
 
 	for _, acl := range acls {
 		if strings.ContainsAny(acl.Mailbox, "*%") {
-			mailboxes, err := o.listMailboxesForUser(ctx, acl.SharedFolder, acl.Mailbox)
-			if err != nil {
-				o.LogError(fmt.Errorf("failed to expand pattern %s for user %s: %w", acl.Mailbox, acl.SharedFolder, err))
-				continue
+			var err error
+			mailboxes, hasCached := syncCtx.expansionCache.Load(acl.Key())
+			if !hasCached {
+				mailboxes, err = o.listMailboxesForUser(ctx, acl.SharedFolder, acl.Mailbox)
+				if err != nil {
+					o.LogError(fmt.Errorf("failed to expand pattern %s for user %s: %w", acl.Mailbox, acl.SharedFolder, err))
+					continue
+				}
+
+				syncCtx.expansionCache.Store(acl.Key(), mailboxes)
 			}
 
 			for _, mailbox := range mailboxes {

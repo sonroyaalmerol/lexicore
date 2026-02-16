@@ -24,7 +24,7 @@ func parseACL(aclStr string) *ACL {
 		pathPart = aclStr[:commaIndex]
 		permsStr := strings.TrimSpace(aclStr[commaIndex+1:])
 		if len(permsStr) > 0 {
-			for _, perm := range strings.Fields(permsStr) {
+			for perm := range strings.FieldsSeq(permsStr) {
 				acl.Rights[perm] = struct{}{}
 			}
 		}

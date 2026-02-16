@@ -8,16 +8,18 @@ import (
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
+	"github.com/puzpuzpuz/xsync/v4"
 )
 
 type syncContext struct {
-	allMailboxes           map[string]struct{}
-	mailboxDesiredACLs     map[string]map[string][]string
-	usersAffectedByMailbox map[string]map[string]struct{}
-	userMailboxMap         map[string][]string
+	allMailboxes           *xsync.Map[string, struct{}]
+	mailboxDesiredACLs     *xsync.Map[string, map[string][]string]
+	usersAffectedByMailbox *xsync.Map[string, map[string]struct{}]
+	userMailboxMap         *xsync.Map[string, []string]
 	isPartialSync          bool
 	partialSyncIdentities  map[string]source.Identity
-	mu                     sync.Mutex
+
+	expansionCache *xsync.Map[string, []string]
 }
 
 type syncWorker struct {
@@ -45,13 +47,21 @@ func (o *DovecotOperator) performSync(
 	result := &operator.SyncResult{}
 
 	syncCtx := &syncContext{
-		allMailboxes:           make(map[string]struct{}),
-		mailboxDesiredACLs:     make(map[string]map[string][]string),
-		usersAffectedByMailbox: make(map[string]map[string]struct{}),
-		userMailboxMap:         make(map[string][]string),
+		allMailboxes:           xsync.NewMap[string, struct{}](),
+		mailboxDesiredACLs:     xsync.NewMap[string, map[string][]string](),
+		usersAffectedByMailbox: xsync.NewMap[string, map[string]struct{}](),
+		userMailboxMap:         xsync.NewMap[string, []string](),
 		isPartialSync:          isPartialSync,
 		partialSyncIdentities:  partialSyncIdentities,
+		expansionCache:         xsync.NewMap[string, []string](),
 	}
+	defer func() {
+		syncCtx.expansionCache.Clear()
+		syncCtx.allMailboxes.Clear()
+		syncCtx.mailboxDesiredACLs.Clear()
+		syncCtx.usersAffectedByMailbox.Clear()
+		syncCtx.userMailboxMap.Clear()
+	}()
 
 	if err := o.processIdentities(ctx, identities, groups, syncCtx, result); err != nil {
 		return result, err
@@ -137,27 +147,31 @@ func (o *DovecotOperator) processIdentity(
 			o.LogInfo("checking user %s (uid: %s)", identity.Email, uid)
 
 			mergedDesired := o.mergeSharedMailAcls(acls)
-			expandedACLs, err := o.expandACLPatterns(ctx, mergedDesired)
+			expandedACLs, err := o.expandACLPatterns(ctx, syncCtx, mergedDesired)
 			if err != nil {
 				o.LogError(fmt.Errorf("failed to expand ACL patterns for user %s: %w", identity.Username, err))
 				result.RecordIdentityError(identity, operator.ActionNoOp, err)
 			} else {
-				syncCtx.mu.Lock()
 				for _, acl := range expandedACLs {
 					mailboxKey := acl.Key()
-					syncCtx.allMailboxes[mailboxKey] = struct{}{}
+					syncCtx.allMailboxes.Store(mailboxKey, struct{}{})
 
-					if syncCtx.mailboxDesiredACLs[mailboxKey] == nil {
-						syncCtx.mailboxDesiredACLs[mailboxKey] = make(map[string][]string)
-					}
-					syncCtx.mailboxDesiredACLs[mailboxKey][identity.Username] = acl.RightsSlice()
+					syncCtx.mailboxDesiredACLs.Compute(mailboxKey, func(existing map[string][]string, loaded bool) (map[string][]string, xsync.ComputeOp) {
+						if !loaded {
+							existing = make(map[string][]string)
+						}
+						existing[identity.Username] = acl.RightsSlice()
+						return existing, xsync.UpdateOp
+					})
 
-					if syncCtx.usersAffectedByMailbox[mailboxKey] == nil {
-						syncCtx.usersAffectedByMailbox[mailboxKey] = make(map[string]struct{})
-					}
-					syncCtx.usersAffectedByMailbox[mailboxKey][uid] = struct{}{}
+					syncCtx.usersAffectedByMailbox.Compute(mailboxKey, func(existing map[string]struct{}, loaded bool) (map[string]struct{}, xsync.ComputeOp) {
+						if !loaded {
+							existing = make(map[string]struct{})
+						}
+						existing[uid] = struct{}{}
+						return existing, xsync.UpdateOp
+					})
 				}
-				syncCtx.mu.Unlock()
 			}
 		}
 	}
@@ -180,22 +194,25 @@ func (o *DovecotOperator) fetchAndRecordUserMailboxes(
 		return
 	}
 
-	syncCtx.mu.Lock()
-	defer syncCtx.mu.Unlock()
-
 	for _, fullMailbox := range mailboxList {
 		trimmed := strings.TrimPrefix(fullMailbox, "Other Users/")
-		syncCtx.allMailboxes[trimmed] = struct{}{}
+		syncCtx.allMailboxes.Store(trimmed, struct{}{})
 
-		if syncCtx.usersAffectedByMailbox[trimmed] == nil {
-			syncCtx.usersAffectedByMailbox[trimmed] = make(map[string]struct{})
-		}
-		syncCtx.usersAffectedByMailbox[trimmed][uid] = struct{}{}
+		syncCtx.usersAffectedByMailbox.Compute(trimmed, func(existing map[string]struct{}, loaded bool) (map[string]struct{}, xsync.ComputeOp) {
+			if !loaded {
+				existing = make(map[string]struct{})
+			}
+			existing[uid] = struct{}{}
+			return existing, xsync.UpdateOp
+		})
 
-		if syncCtx.userMailboxMap[username] == nil {
-			syncCtx.userMailboxMap[username] = make([]string, 0)
-		}
-		syncCtx.userMailboxMap[username] = append(syncCtx.userMailboxMap[username], trimmed)
+		syncCtx.userMailboxMap.Compute(username, func(existing []string, loaded bool) ([]string, xsync.ComputeOp) {
+			if !loaded {
+				existing = make([]string, 0)
+			}
+			existing = append(existing, trimmed)
+			return existing, xsync.UpdateOp
+		})
 	}
 }
 
@@ -207,10 +224,9 @@ func (o *DovecotOperator) applyACLChanges(
 	result *operator.SyncResult,
 ) error {
 	worker := o.newSyncWorker(ctx)
-	usersWithChanges := make(map[string]struct{})
-	var usersWithChangesMu sync.Mutex
+	usersWithChanges := xsync.NewMap[string, struct{}]()
 
-	for mailboxKey := range syncCtx.allMailboxes {
+	syncCtx.allMailboxes.Range(func(mailboxKey string, _ struct{}) bool {
 		if !worker.submit(func() {
 			parts := strings.SplitN(mailboxKey, "/", 2)
 			if len(parts) != 2 {
@@ -242,14 +258,13 @@ func (o *DovecotOperator) applyACLChanges(
 					return
 				}
 
-				usersWithChangesMu.Lock()
 				o.recordUserChanges(mailboxKey, sharedFolder, mailboxPath, diff, syncCtx, identities, usersWithChanges, result)
-				usersWithChangesMu.Unlock()
 			}
 		}) {
-			break
+			return false
 		}
-	}
+		return true
+	})
 
 	worker.wait()
 	return worker.err()
@@ -262,7 +277,7 @@ func (o *DovecotOperator) getDesiredACLsForMailbox(
 ) map[string][]string {
 	desiredForMailbox := make(map[string][]string)
 
-	if desired, exists := syncCtx.mailboxDesiredACLs[mailboxKey]; exists {
+	if desired, exists := syncCtx.mailboxDesiredACLs.Load(mailboxKey); exists {
 		if syncCtx.isPartialSync {
 			for username, rights := range desired {
 				if o.isUserInPartialSync(username, syncCtx.partialSyncIdentities, identities) {
@@ -327,20 +342,22 @@ func (o *DovecotOperator) recordUserChanges(
 	diff *MailboxDiff,
 	syncCtx *syncContext,
 	identities map[string]source.Identity,
-	usersWithChanges map[string]struct{},
+	usersWithChanges *xsync.Map[string, struct{}],
 	result *operator.SyncResult,
 ) {
-	for uid := range syncCtx.usersAffectedByMailbox[mailboxKey] {
-		identity, exists := identities[uid]
-		if !exists {
-			continue
-		}
-		username := identity.Username
-		if diff.DiffReport[username] != "" {
-			usersWithChanges[uid] = struct{}{}
-			result.RecordIdentityUpdateManual(uid, username, map[string]string{
-				fmt.Sprintf("%s/%s", sharedFolder, mailboxPath): diff.DiffReport[username],
-			})
+	if affectedUsers, exists := syncCtx.usersAffectedByMailbox.Load(mailboxKey); exists {
+		for uid := range affectedUsers {
+			identity, exists := identities[uid]
+			if !exists {
+				continue
+			}
+			username := identity.Username
+			if diff.DiffReport[username] != "" {
+				usersWithChanges.Store(uid, struct{}{})
+				result.RecordIdentityUpdateManual(uid, username, map[string]string{
+					fmt.Sprintf("%s/%s", sharedFolder, mailboxPath): diff.DiffReport[username],
+				})
+			}
 		}
 	}
 }
