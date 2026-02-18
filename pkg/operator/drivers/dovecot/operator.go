@@ -13,14 +13,17 @@ import (
 
 type DovecotOperator struct {
 	*operator.BaseOperator
-	baseURL      string
-	domain       string
-	Client       *http.Client
-	b64Password  string
-	ignoreAnyone bool
+	baseURL         string
+	domain          string
+	Client          *http.Client
+	b64Password     string
+	removeAnyoneACL bool
 }
 
-func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any) error {
+func (o *DovecotOperator) Initialize(
+	ctx context.Context,
+	config map[string]any,
+) error {
 	o.SetConfig(config)
 	if err := o.Validate(ctx); err != nil {
 		return err
@@ -45,18 +48,20 @@ func (o *DovecotOperator) Initialize(ctx context.Context, config map[string]any)
 	apiKey, _ := o.GetStringConfig("apiKey")
 	o.b64Password = base64.URLEncoding.EncodeToString([]byte(apiKey))
 
-	anyone, hasAnyone := o.GetConfig("ignoreAnyone")
+	anyone, hasAnyone := o.GetConfig("removeAnyoneACL")
 	if hasAnyone {
 		var ok bool
-		o.ignoreAnyone, ok = anyone.(bool)
+		o.removeAnyoneACL, ok = anyone.(bool)
 		if !ok {
-			o.ignoreAnyone = false
+			o.removeAnyoneACL = false
 		}
 	}
 	return nil
 }
 
-func (o *DovecotOperator) Validate(ctx context.Context) error {
+func (o *DovecotOperator) Validate(
+	ctx context.Context,
+) error {
 	required := []string{"url", "apiKey", "domain"}
 	for _, req := range required {
 		if v, _ := o.GetStringConfig(req); v == "" {
@@ -68,15 +73,19 @@ func (o *DovecotOperator) Validate(ctx context.Context) error {
 
 func (o *DovecotOperator) applyMailboxACLs(
 	ctx context.Context,
-	result *operator.SyncResult,
 	sharedFolder string,
 	mailboxPath string,
 	diff *MailboxDiff,
-	isDryRun bool,
 ) error {
+	syncCtx := syncCtxFrom(ctx)
+	mailboxKey := fmt.Sprintf("%s/%s", sharedFolder, mailboxPath)
+
 	for username, rights := range diff.ToSet {
-		if isDryRun {
-			o.LogInfo("[DRY RUN] Would set %s rights for %s to %s/%s", rights, username, sharedFolder, mailboxPath)
+		if syncCtx.state.DryRun {
+			o.LogInfo(
+				"[DRY RUN] Would set %s rights for %s to %s",
+				rights, username, mailboxKey,
+			)
 		} else {
 			if err := o.setMailboxACL(ctx, sharedFolder, mailboxPath, username, rights); err != nil {
 				return fmt.Errorf("failed to set ACL for %s: %w", username, err)
@@ -85,11 +94,11 @@ func (o *DovecotOperator) applyMailboxACLs(
 	}
 
 	for _, username := range diff.ToRemove {
-		result.RecordIdentityUpdateManual(username, username, map[string]string{
-			fmt.Sprintf("%s/%s", sharedFolder, mailboxPath): "REMOVE_ALL",
-		})
-		if isDryRun {
-			o.LogInfo("[DRY RUN] Would remove rights for %s from %s/%s", username, sharedFolder, mailboxPath)
+		if syncCtx.state.DryRun {
+			o.LogInfo(
+				"[DRY RUN] Would remove rights for %s from %s",
+				username, mailboxKey,
+			)
 		} else {
 			if err := o.deleteMailboxACL(ctx, sharedFolder, mailboxPath, username); err != nil {
 				return fmt.Errorf("failed to delete ACL for %s: %w", username, err)

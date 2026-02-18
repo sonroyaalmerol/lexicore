@@ -50,14 +50,24 @@ func (p *Pipeline) Execute(
 ) (map[string]source.Identity, map[string]source.Group, error) {
 	var err error
 
+	newIdentities := make(map[string]source.Identity, len(identities))
+	for k, v := range identities {
+		newIdentities[k] = v.DeepCopy()
+	}
+
+	newGroups := make(map[string]source.Group, len(groups))
+	for k, v := range groups {
+		newGroups[k] = v.DeepCopy()
+	}
+
 	for _, transformer := range p.transformers {
-		identities, groups, err = transformer.Transform(ctx, identities, groups)
+		newIdentities, newGroups, err = transformer.Transform(ctx, newIdentities, newGroups)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
-	return identities, groups, nil
+	return newIdentities, newGroups, nil
 }
 
 func createTransformer(config manifest.TransformerConfig) (Transformer, error) {
@@ -68,6 +78,8 @@ func createTransformer(config manifest.TransformerConfig) (Transformer, error) {
 		return NewTemplateTransformer(config.Config)
 	case "sanitizer":
 		return NewSanitizerTransformer(config.Config)
+	case "groupAggregation":
+		return NewGroupAggregationTransformer(config.Config)
 	default:
 		return nil, fmt.Errorf("unknown transformer type: %s", config.Type)
 	}

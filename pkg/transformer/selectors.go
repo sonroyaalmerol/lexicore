@@ -73,6 +73,8 @@ func parseSelector(config map[string]any) (Selector, error) {
 		return parseStrictSelector(config)
 	case "group":
 		return parseGroupSelector(config)
+	case "bool":
+		return parseBoolSelector(config)
 	default:
 		return nil, fmt.Errorf("unknown selector type: %s", selectorType)
 	}
@@ -224,4 +226,42 @@ func (r *GroupSelector) Apply(identity *source.Identity, allGroups map[string]so
 	}
 
 	return false
+}
+
+type BoolSelector struct {
+	field string
+	value bool
+}
+
+func parseBoolSelector(config map[string]any) (*BoolSelector, error) {
+	field, ok := config["field"].(string)
+	if !ok {
+		return nil, fmt.Errorf("field not specified")
+	}
+
+	value, ok := config["value"].(bool)
+	if !ok {
+		return nil, fmt.Errorf("value not specified or not a boolean")
+	}
+
+	return &BoolSelector{
+		field: field,
+		value: value,
+	}, nil
+}
+
+func (r *BoolSelector) Apply(identity *source.Identity, _ map[string]source.Group) bool {
+	var value bool
+	switch r.field {
+	case "disabled":
+		value = identity.Disabled
+	default:
+		if v, ok := identity.Attributes[r.field].(bool); ok {
+			value = v
+		} else {
+			return false
+		}
+	}
+
+	return r.value == value
 }

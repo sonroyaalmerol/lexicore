@@ -2,10 +2,11 @@ package iredadmin
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
+	"strings"
 
 	"codeberg.org/lexicore/lexicore/pkg/source"
+	"codeberg.org/lexicore/lexicore/pkg/utils"
 )
 
 // manifest to iredadmin userdata
@@ -44,27 +45,25 @@ func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 			} else {
 				values = []string{"false"}
 			}
-		case []string:
-			values = val
 		case []any:
 			for _, item := range val {
 				switch val2 := item.(type) {
 				case string:
-					if val2 == "<no value>" {
+					if val2 == "<no value>" || strings.TrimSpace(val2) == "" {
 						continue
 					}
-					values = append(values, val2)
+					values = utils.AppendUnique(values, val2)
 				case int:
-					values = append(values, strconv.Itoa(val2))
+					values = utils.AppendUnique(values, strconv.Itoa(val2))
 				case int32:
-					values = append(values, strconv.Itoa(int(val2)))
+					values = utils.AppendUnique(values, strconv.Itoa(int(val2)))
 				case int64:
-					values = append(values, strconv.Itoa(int(val2)))
+					values = utils.AppendUnique(values, strconv.Itoa(int(val2)))
 				case bool:
 					if val2 {
-						values = append(values, "true")
+						values = utils.AppendUnique(values, "true")
 					} else {
-						values = append(values, "false")
+						values = utils.AppendUnique(values, "false")
 					}
 				default:
 					o.LogError(fmt.Errorf("unsupported type for attribute k array element: %T", item))
@@ -77,8 +76,6 @@ func (o *IRedAdminOperator) identityToUser(identity source.Identity) UserData {
 		}
 
 		if len(values) > 0 {
-			slices.Sort(values)
-
 			switch fieldName {
 			case AttributeGivenName:
 				u.GivenName = values

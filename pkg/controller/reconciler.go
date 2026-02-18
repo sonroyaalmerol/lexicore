@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"sort"
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
@@ -18,25 +19,44 @@ func (m *Manager) computeSourceDataHash(
 	identities map[string]source.Identity,
 	groups map[string]source.Group,
 ) (string, error) {
-	data := struct {
-		Identities map[string]source.Identity
-		Groups     map[string]source.Group
-	}{
-		Identities: identities,
-		Groups:     groups,
+	h := sha256.New()
+
+	keys := make([]string, 0, len(identities)+len(groups))
+
+	for k := range identities {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		jsonData, err := json.Marshal(identities[k])
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal identity: %w", err)
+		}
+		h.Write([]byte(k))
+		h.Write(jsonData)
 	}
 
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal source data: %w", err)
+	keys = keys[:0]
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		jsonData, err := json.Marshal(groups[k])
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal group: %w", err)
+		}
+		h.Write([]byte(k))
+		h.Write(jsonData)
 	}
 
-	hash := sha256.Sum256(jsonData)
-	return fmt.Sprintf("%x", hash), nil
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
-func (m *Manager) hasSourceDataChanged(sourceRef string, currentHash string) bool {
-	previousHash, exists := m.sourceDataHashes.Load(sourceRef)
+func (m *Manager) hasSourceDataChanged(targetName string, currentHash string) bool {
+	previousHash, exists := m.sourceDataHashes.Load(targetName)
 	if !exists {
 		return true
 	}
@@ -81,37 +101,7 @@ func (m *Manager) reconcileBatch(sourceRef, batchID string) error {
 		return nil
 	}
 
-	dataChanged := m.hasSourceDataChanged(sourceRef, currentHash)
-
-	if !dataChanged {
-		skippedCount := 0
-		for targetName, target := range targets {
-			if target.ShouldSkipUnchangedSync() {
-				m.logger.Info(
-					"Skipping sync - no source data changes detected",
-					zap.String("target", targetName),
-					zap.String("source", sourceRef),
-				)
-				target.lastReconciled = time.Now()
-				skippedCount++
-			}
-		}
-
-		if skippedCount == len(targets) {
-			m.logger.Info(
-				"All targets skipped - no source data changes",
-				zap.String("source", sourceRef),
-				zap.Int("skipped", skippedCount),
-			)
-			return nil
-		}
-	}
-
-	if dataChanged && currentHash != "" {
-		m.sourceDataHashes.Store(sourceRef, currentHash)
-	}
-
-	return m.reconcileMultipleTargets(targets, identities, groups, sourceRef, batchID, dataChanged)
+	return m.reconcileMultipleTargets(targets, identities, groups, sourceRef, batchID, currentHash)
 }
 
 func (m *Manager) reconcile(targetName string) error {
@@ -125,29 +115,105 @@ func (m *Manager) reconcile(targetName string) error {
 		return fmt.Errorf("failed to fetch source data: %w", err)
 	}
 
-	sourceRef := target.manifest.Spec.SourceRef
 	currentHash, err := m.computeSourceDataHash(identities, groups)
 	if err != nil {
 		m.logger.Warn("Failed to compute source data hash", zap.Error(err))
 	}
 
-	dataChanged := m.hasSourceDataChanged(sourceRef, currentHash)
+	dataChanged := m.hasSourceDataChanged(targetName, currentHash)
 
 	if !dataChanged && target.ShouldSkipUnchangedSync() {
 		m.logger.Info(
 			"Skipping sync - no source data changes detected",
 			zap.String("target", targetName),
-			zap.String("source", sourceRef),
+			zap.String("source", target.manifest.Spec.SourceRef),
 		)
 		target.lastReconciled = time.Now()
 		return nil
 	}
 
 	if dataChanged && currentHash != "" {
-		m.sourceDataHashes.Store(sourceRef, currentHash)
+		m.sourceDataHashes.Store(targetName, currentHash)
 	}
 
 	return m.reconcileTarget(targetName, target, identities, groups, false)
+}
+
+func (m *Manager) reconcileMultipleTargets(
+	targets map[string]*ActiveOperator,
+	identities map[string]source.Identity,
+	groups map[string]source.Group,
+	sourceRef, batchID string,
+	currentHash string,
+) error {
+	successCount := 0
+	errorCount := 0
+	skippedCount := 0
+
+	for targetName, target := range targets {
+		if _, loaded := m.reconcilingTargets.LoadOrStore(targetName, true); loaded {
+			m.logger.Info(
+				"Skipping target in batch - already being reconciled",
+				zap.String("target", targetName),
+				zap.String("source", sourceRef),
+			)
+			skippedCount++
+			continue
+		}
+
+		dataChanged := m.hasSourceDataChanged(targetName, currentHash)
+
+		if !dataChanged && target.ShouldSkipUnchangedSync() {
+			m.logger.Info(
+				"Skipping target - no source data changes",
+				zap.String("target", targetName),
+				zap.String("source", sourceRef),
+			)
+			target.lastReconciled = time.Now()
+			m.reconcilingTargets.Delete(targetName)
+			skippedCount++
+			continue
+		}
+
+		if dataChanged && currentHash != "" {
+			m.sourceDataHashes.Store(targetName, currentHash)
+		}
+
+		err := m.reconcileTarget(targetName, target, identities, groups, false)
+		m.reconcilingTargets.Delete(targetName)
+
+		if err != nil {
+			m.logger.Error(
+				"Target reconciliation failed in batch",
+				zap.String("target", targetName),
+				zap.String("source", sourceRef),
+				zap.Error(err),
+			)
+			errorCount++
+		} else {
+			target.lastReconciled = time.Now()
+			successCount++
+		}
+	}
+
+	m.logger.Info(
+		"Batch reconciliation completed",
+		zap.String("source", sourceRef),
+		zap.String("batchID", batchID),
+		zap.Int("successful", successCount),
+		zap.Int("failed", errorCount),
+		zap.Int("skipped", skippedCount),
+	)
+
+	if errorCount > 0 {
+		return fmt.Errorf(
+			"batch reconciliation completed with %d/%d failures",
+			errorCount,
+			len(targets)-skippedCount,
+		)
+	}
+
+	return nil
 }
 
 func (m *Manager) reconcilePartial(targetName string, identityUIDs, groupGIDs []string) error {
@@ -239,8 +305,8 @@ func (m *Manager) reconcileTarget(
 		return fmt.Errorf("failed to sync to target: %w", err)
 	}
 
-	counts := result.SummaryCounts()
-	errCount := counts["TOTAL_ERRORS"]
+	counts := result.Counts()
+	errCount := counts["ERRORS"]
 	statusMsg := fmt.Sprintf("%s sync completed successfully", syncType)
 	if errCount > 0 {
 		statusMsg = fmt.Sprintf("%s sync completed with %d errors", syncType, errCount)
@@ -259,11 +325,10 @@ func (m *Manager) reconcileTarget(
 		zap.String("target", targetName),
 		zap.String("type", syncType),
 		zap.Duration("duration", time.Since(startTime)),
-		zap.Int("identities_created", counts["IDENTITY_CREATE"]),
-		zap.Int("identities_updated", counts["IDENTITY_UPDATE"]),
-		zap.Int("identities_deleted", counts["IDENTITY_DELETE"]),
-		zap.Int("group_adds", counts["IDENTITY_GROUP_ADD"]),
-		zap.Int("group_rems", counts["IDENTITY_GROUP_REMOVE"]),
+		zap.Int("created", counts[string(operator.ActionCreate)]),
+		zap.Int("updated", counts[string(operator.ActionUpdate)]),
+		zap.Int("deleted", counts[string(operator.ActionDelete)]),
+		zap.Int("skipped", counts[string(operator.ActionSkip)]),
 		zap.Int("errors", errCount),
 	)
 
@@ -398,23 +463,27 @@ func (m *Manager) syncToTarget(
 	isPartial bool,
 	partialParams ...[]string,
 ) (*operator.SyncResult, error) {
+	auditor := operator.NewSyncResult(target.Name())
+
 	if isPartial && len(partialParams) == 2 {
 		state := &operator.PartialSyncState{
 			Identities:            identities,
 			Groups:                groups,
 			DryRun:                target.manifest.Spec.DryRun,
+			Result:                auditor,
 			RequestedIdentityUIDs: partialParams[0],
 			RequestedGroupGIDs:    partialParams[1],
 		}
-		return target.PartialSync(m.shutdownCtx, state)
+		return auditor, target.PartialSync(m.shutdownCtx, state)
 	}
 
 	state := &operator.SyncState{
 		Identities: identities,
 		Groups:     groups,
 		DryRun:     target.manifest.Spec.DryRun,
+		Result:     auditor,
 	}
-	return target.Sync(m.shutdownCtx, state)
+	return auditor, target.Sync(m.shutdownCtx, state)
 }
 
 func (m *Manager) getTargetsForSource(sourceRef string) map[string]*ActiveOperator {
@@ -426,77 +495,6 @@ func (m *Manager) getTargetsForSource(sourceRef string) map[string]*ActiveOperat
 		return true
 	})
 	return targets
-}
-
-func (m *Manager) reconcileMultipleTargets(
-	targets map[string]*ActiveOperator,
-	identities map[string]source.Identity,
-	groups map[string]source.Group,
-	sourceRef, batchID string,
-	dataChanged bool,
-) error {
-	successCount := 0
-	errorCount := 0
-	skippedCount := 0
-
-	for targetName, target := range targets {
-		if _, loaded := m.reconcilingTargets.LoadOrStore(targetName, true); loaded {
-			m.logger.Info(
-				"Skipping target in batch - already being reconciled",
-				zap.String("target", targetName),
-				zap.String("source", sourceRef),
-			)
-			skippedCount++
-			continue
-		}
-
-		if !dataChanged && target.ShouldSkipUnchangedSync() {
-			m.logger.Info(
-				"Skipping target - no source data changes",
-				zap.String("target", targetName),
-				zap.String("source", sourceRef),
-			)
-			target.lastReconciled = time.Now()
-			m.reconcilingTargets.Delete(targetName)
-			skippedCount++
-			continue
-		}
-
-		err := m.reconcileTarget(targetName, target, identities, groups, false)
-		m.reconcilingTargets.Delete(targetName)
-
-		if err != nil {
-			m.logger.Error(
-				"Target reconciliation failed in batch",
-				zap.String("target", targetName),
-				zap.String("source", sourceRef),
-				zap.Error(err),
-			)
-			errorCount++
-		} else {
-			target.lastReconciled = time.Now()
-			successCount++
-		}
-	}
-
-	m.logger.Info(
-		"Batch reconciliation completed",
-		zap.String("source", sourceRef),
-		zap.String("batchID", batchID),
-		zap.Int("successful", successCount),
-		zap.Int("failed", errorCount),
-		zap.Int("skipped", skippedCount),
-	)
-
-	if errorCount > 0 {
-		return fmt.Errorf(
-			"batch reconciliation completed with %d/%d failures",
-			errorCount,
-			len(targets)-skippedCount,
-		)
-	}
-
-	return nil
 }
 
 func (m *Manager) generateAuditReportIfNeeded(
@@ -523,6 +521,9 @@ func (m *Manager) generateAuditReportIfNeeded(
 		m.logger.Error("Failed to create audit report file", zap.Error(err))
 		return
 	}
+	defer file.Close()
 
-	operator.GenerateCSV(file, result.Entries)
+	if err := operator.ExportToExcel(file, result.Entries()); err != nil {
+		m.logger.Error("Failed to write audit report", zap.Error(err))
+	}
 }

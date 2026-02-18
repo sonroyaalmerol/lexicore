@@ -119,15 +119,15 @@ func (s *PluginOperator) Validate(ctx context.Context) error {
 	return nil
 }
 
-func (s *PluginOperator) Sync(ctx context.Context, state *SyncState) (*SyncResult, error) {
+func (s *PluginOperator) Sync(ctx context.Context, state *SyncState) error {
 	syncFunc, ok := s.globals["sync"]
 	if !ok {
-		return nil, fmt.Errorf("sync function not found")
+		return fmt.Errorf("sync function not found")
 	}
 
 	callable, ok := syncFunc.(starlark.Callable)
 	if !ok {
-		return nil, fmt.Errorf("sync is not callable")
+		return fmt.Errorf("sync is not callable")
 	}
 
 	stateDict := syncStateToPlugin(state)
@@ -135,15 +135,17 @@ func (s *PluginOperator) Sync(ctx context.Context, state *SyncState) (*SyncResul
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
 	if err != nil {
-		return nil, fmt.Errorf("sync failed: %w", err)
+		return fmt.Errorf("sync failed: %w", err)
 	}
 
 	syncResult, err := starlarkToSyncResult(result)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return syncResult, nil
+	state.Result = syncResult
+
+	return nil
 }
 
 func (s *PluginOperator) Close() error {

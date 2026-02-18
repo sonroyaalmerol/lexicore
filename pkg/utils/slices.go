@@ -1,6 +1,9 @@
 package utils
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 func SlicesAreEqual(a, b []string) bool {
 	if len(a) != len(b) {
@@ -23,7 +26,14 @@ func SlicesAreEqual(a, b []string) bool {
 	return true
 }
 
-func ConcatUnique[T ~string](slices ...[]T) []T {
+func SliceToSortedString(a []string, delimiter string) string {
+	sorted := slices.Clone(a)
+	slices.Sort(sorted)
+
+	return strings.Join(sorted, delimiter)
+}
+
+func ConcatUnique[T comparable](slices ...[]T) []T {
 	totalLen := 0
 	for _, s := range slices {
 		totalLen += len(s)

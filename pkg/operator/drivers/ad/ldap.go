@@ -11,7 +11,7 @@ import (
 	"golang.org/x/text/encoding/unicode"
 )
 
-func (o *ADOperator) createUser(dn string, id *source.Identity) error {
+func (o *ADOperator) createUser(conn *ldap.Conn, dn string, id source.Identity) error {
 	domain, _ := o.GetStringConfig("domain")
 
 	addReq := ldap.NewAddRequest(dn, nil)
@@ -34,12 +34,12 @@ func (o *ADOperator) createUser(dn string, id *source.Identity) error {
 		addReq.Attribute(k, []string{fmt.Sprintf("%v", v)})
 	}
 
-	if err := o.conn.Add(addReq); err != nil {
+	if err := conn.Add(addReq); err != nil {
 		return err
 	}
 
 	if initPass, ok := o.GetTemplatedStringConfig("defaultPassword", id.Attributes); ok == nil {
-		if err := o.setPassword(dn, initPass); err != nil {
+		if err := o.setPassword(conn, dn, initPass); err != nil {
 			return err
 		}
 	}
@@ -47,27 +47,27 @@ func (o *ADOperator) createUser(dn string, id *source.Identity) error {
 	return nil
 }
 
-func (o *ADOperator) setPassword(dn, password string) error {
+func (o *ADOperator) setPassword(conn *ldap.Conn, dn, password string) error {
 	utf16 := unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM)
 	pwdEncoded, _ := utf16.NewEncoder().String(fmt.Sprintf("\"%s\"", password))
 	passReq := ldap.NewModifyRequest(dn, []ldap.Control{})
 	passReq.Replace("unicodePwd", []string{pwdEncoded})
-	if err := o.conn.Modify(passReq); err != nil {
+	if err := conn.Modify(passReq); err != nil {
 		return fmt.Errorf("error setting user password: %v\n", err)
 	}
 	return nil
 }
 
-func (o *ADOperator) updateUser(res *operator.SyncResult, desiredDN string, entry *ldap.Entry, id *source.Identity, isDryRun bool) error {
+func (o *ADOperator) updateUser(
+	conn *ldap.Conn,
+	res *operator.SyncResult,
+	desiredDN string,
+	entry ldap.Entry,
+	id source.Identity,
+	isDryRun bool,
+) error {
 	modReq := ldap.NewModifyRequest(entry.DN, nil)
-	hasChanges := false
-
-	diff := make(map[string]string)
-	defer func() {
-		if len(diff) > 0 {
-			res.RecordIdentityUpdate(*id, diff)
-		}
-	}()
+	var changes []operator.Change
 
 	for k, v := range id.Attributes {
 		if k == "baseDN" || k == "adGroups" {
@@ -84,124 +84,123 @@ func (o *ADOperator) updateUser(res *operator.SyncResult, desiredDN string, entr
 
 			currentVal := entry.GetAttributeValues(k)
 			if !utils.SlicesAreEqual(vArrStr, currentVal) {
-				diff[k] = utils.DiffArrString(currentVal, vArrStr)
-				if isDryRun {
-					o.LogInfo("[DRY RUN] Would set %s to %v for %s", k, vArrStr, id.Username)
-				} else {
+				changes = append(changes, operator.AttrChange(
+					k,
+					strings.Join(currentVal, ","),
+					strings.Join(vArrStr, ","),
+				))
+				if !isDryRun {
 					modReq.Replace(k, vArrStr)
 				}
-				hasChanges = true
-
 			}
 		} else {
 			currentVal := entry.GetAttributeValue(k)
 			val := fmt.Sprintf("%v", v)
 			if val != "" && currentVal != val {
-				diff[k] = utils.DiffString(currentVal, val)
-				if isDryRun {
-					o.LogInfo("[DRY RUN] Would set %s to %v for %s", k, val, id.Username)
-				} else {
+				changes = append(changes, operator.AttrChange(k, currentVal, val))
+				if !isDryRun {
 					modReq.Replace(k, []string{val})
 				}
-				hasChanges = true
 			}
 		}
 	}
-	if !hasChanges {
+
+	if len(changes) == 0 {
 		return nil
 	}
 
 	if !isDryRun {
-		err := o.conn.Modify(modReq)
-		if err != nil {
+		if err := conn.Modify(modReq); err != nil {
 			return err
 		}
 	}
 
-	if entry.DN == desiredDN {
-		return nil
-	}
-
-	dnSplit := strings.SplitN(entry.DN, ",", 2)
-	if len(dnSplit) != 2 {
-		return nil
-	}
-	desiredDnSplit := strings.SplitN(desiredDN, ",", 2)
-	if len(desiredDnSplit) != 2 {
-		return nil
-	}
-
-	diff["dn"] = utils.DiffString(entry.DN, desiredDN)
-	if isDryRun {
-		o.LogInfo("[DRY RUN] Would move %s from %s to %s", dnSplit[0], entry.DN, desiredDnSplit[1])
-	} else {
-		moveReq := ldap.NewModifyDNRequest(entry.DN, dnSplit[0], true, desiredDnSplit[1])
-		err := o.conn.ModifyDN(moveReq)
-		if err != nil {
-			return err
+	if entry.DN != desiredDN {
+		dnSplit := strings.SplitN(entry.DN, ",", 2)
+		desiredDnSplit := strings.SplitN(desiredDN, ",", 2)
+		if len(dnSplit) == 2 && len(desiredDnSplit) == 2 {
+			changes = append(changes, operator.AttrChange("dn", entry.DN, desiredDN))
+			if !isDryRun {
+				moveReq := ldap.NewModifyDNRequest(entry.DN, dnSplit[0], true, desiredDnSplit[1])
+				if err := conn.ModifyDN(moveReq); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
+	res.Record(operator.ActionUpdate, id.UID, id.Username, changes...)
 	return nil
 }
 
-func (o *ADOperator) syncGroups(res *operator.SyncResult, userDN string, currentMemberOf []string, user *source.Identity, isDryRun bool) error {
-	desiredGroups := make(map[string]bool)
+func (o *ADOperator) syncGroups(
+	conn *ldap.Conn,
+	res *operator.SyncResult,
+	userDN string,
+	currentMemberOf []string,
+	user source.Identity,
+	isDryRun bool,
+) error {
 	groupDNAny, ok := user.Attributes["adGroups"]
 	if !ok {
 		return nil
 	}
 
-	groupDN, ok := groupDNAny.(string)
-	if ok {
-		desiredGroups[groupDN] = true
-	} else {
-		groupDNAnyArr, ok := groupDNAny.([]any)
-		if !ok {
-			return nil
-		}
-
-		for _, dnAny := range groupDNAnyArr {
+	desiredGroups := make(map[string]bool)
+	switch v := groupDNAny.(type) {
+	case string:
+		desiredGroups[v] = true
+	case []any:
+		for _, dnAny := range v {
 			if dnStr, isStr := dnAny.(string); isStr {
 				desiredGroups[dnStr] = true
 			}
 		}
+	default:
+		return nil
 	}
 
-	currentGroups := make(map[string]bool)
+	currentGroups := make(map[string]bool, len(currentMemberOf))
 	for _, memberOf := range currentMemberOf {
 		currentGroups[memberOf] = true
 	}
 
+	var changes []operator.Change
+
 	for groupDN := range desiredGroups {
-		if !currentGroups[groupDN] {
-			res.RecordGroupMembership(*user, groupDN, operator.ActionGroupAdd)
-			if isDryRun {
-				o.LogInfo("[DRY RUN] Would add %s to group %s", userDN, groupDN)
-			} else {
-				grpReq := ldap.NewModifyRequest(groupDN, []ldap.Control{})
-				grpReq.Add("member", []string{userDN})
-				if err := o.conn.Modify(grpReq); err != nil {
-					return fmt.Errorf("error adding user to group %s: %v", groupDN, err)
-				}
-			}
+		if currentGroups[groupDN] {
+			continue
+		}
+		changes = append(changes, operator.MembershipAdded(groupDN))
+		if isDryRun {
+			o.LogInfo("[DRY RUN] Would add %s to group %s", userDN, groupDN)
+			continue
+		}
+		grpReq := ldap.NewModifyRequest(groupDN, []ldap.Control{})
+		grpReq.Add("member", []string{userDN})
+		if err := conn.Modify(grpReq); err != nil {
+			return fmt.Errorf("error adding user to group %s: %v", groupDN, err)
 		}
 	}
 
 	for groupDN := range currentGroups {
-		if !desiredGroups[groupDN] {
-			res.RecordGroupMembership(*user, groupDN, operator.ActionGroupRem)
-			if isDryRun {
-				o.LogInfo("[DRY RUN] Would remove %s from group %s", userDN, groupDN)
-			} else {
-				grpReq := ldap.NewModifyRequest(groupDN, []ldap.Control{})
-				grpReq.Delete("member", []string{userDN})
-				if err := o.conn.Modify(grpReq); err != nil {
-					return fmt.Errorf("error removing user from group %s: %v", groupDN, err)
-				}
-			}
+		if desiredGroups[groupDN] {
+			continue
+		}
+		changes = append(changes, operator.MembershipRemoved(groupDN))
+		if isDryRun {
+			o.LogInfo("[DRY RUN] Would remove %s from group %s", userDN, groupDN)
+			continue
+		}
+		grpReq := ldap.NewModifyRequest(groupDN, []ldap.Control{})
+		grpReq.Delete("member", []string{userDN})
+		if err := conn.Modify(grpReq); err != nil {
+			return fmt.Errorf("error removing user from group %s: %v", groupDN, err)
 		}
 	}
 
+	if len(changes) > 0 {
+		res.Record(operator.ActionUpdate, user.UID, user.Username, changes...)
+	}
 	return nil
 }

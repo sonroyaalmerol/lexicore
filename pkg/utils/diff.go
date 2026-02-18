@@ -6,24 +6,26 @@ import (
 )
 
 func StringArrDiff(oldArr, newArr []string) (added, deleted []string) {
-	oldSet := make(map[string]bool)
-	newSet := make(map[string]bool)
+	oldSet := make(map[string]struct{}, len(oldArr))
+	newSet := make(map[string]struct{}, len(newArr))
 
 	for _, s := range oldArr {
-		oldSet[s] = true
+		oldSet[s] = struct{}{}
 	}
 	for _, s := range newArr {
-		newSet[s] = true
+		newSet[s] = struct{}{}
 	}
 
+	deleted = make([]string, 0, len(oldArr))
 	for _, s := range oldArr {
-		if !newSet[s] {
+		if _, exists := newSet[s]; !exists {
 			deleted = append(deleted, s)
 		}
 	}
 
+	added = make([]string, 0, len(newArr))
 	for _, s := range newArr {
-		if !oldSet[s] {
+		if _, exists := oldSet[s]; !exists {
 			added = append(added, s)
 		}
 	}

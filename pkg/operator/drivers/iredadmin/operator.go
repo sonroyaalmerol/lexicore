@@ -92,7 +92,7 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 				MaxIdleConnsPerHost: 20,
 				IdleConnTimeout:     90 * time.Second,
 			},
-			Timeout: 30 * time.Second,
+			Timeout: 120 * time.Second,
 		}
 	}
 

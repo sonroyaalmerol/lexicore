@@ -13,10 +13,6 @@ spec:
     searchBaseDN: "ou=Users,dc=example,dc=com"
     domain: "example.com"
     defaultPassword: "ChangeMe123!" # Required for initial creation
-    groupAttributeMappings:
-      - sourceAttribute: domainGroups
-        targetAttribute: adGroups
-        aggregationMode: uniqueAppend
   transformers:
     - name: ad-mapper
       type: template
@@ -29,3 +25,10 @@ spec:
           ad:company: "Acme Corp"
           # baseDN is a required attribute
           ad:baseDN: "ou=Users,dc=example,dc=com"
+    - name: aggregate-group-attrs
+      type: groupAggregation
+      config:
+        mappings:
+          - sourceAttribute: domainGroups
+            targetAttribute: ad:adGroups
+            aggregationMode: uniqueAppend

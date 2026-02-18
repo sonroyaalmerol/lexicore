@@ -3,6 +3,7 @@ package ad
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
@@ -56,33 +57,106 @@ func (o *ADOperator) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
-	searchBaseDN, _ := o.GetStringConfig("searchBaseDN")
-	res := &operator.SyncResult{}
+func (o *ADOperator) getConnection() (*ldap.Conn, error) {
+	addr, _ := o.GetStringConfig("url")
+	bindDN, _ := o.GetStringConfig("bindDN")
+	pass, _ := o.GetStringConfig("bindPassword")
 
-	for uid, id := range state.Identities {
-		enriched := o.EnrichIdentity(id, state.Groups)
-		o.syncIdentity(uid, &enriched, searchBaseDN, state.DryRun, res, false)
+	l, err := ldap.DialURL(addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial AD: %w", err)
 	}
 
-	return res, nil
+	if err := l.Bind(bindDN, pass); err != nil {
+		l.Close()
+		return nil, fmt.Errorf("ad-operator bind failed: %w", err)
+	}
+
+	return l, nil
 }
 
-func (o *ADOperator) PartialSync(ctx context.Context, state *operator.PartialSyncState) (*operator.SyncResult, error) {
+func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) error {
 	searchBaseDN, _ := o.GetStringConfig("searchBaseDN")
-	res := &operator.SyncResult{}
 
-	for uid, id := range state.Identities {
-		enriched := o.EnrichIdentity(id, state.Groups)
-		o.syncIdentity(uid, &enriched, searchBaseDN, state.DryRun, res, true)
+	concurrency := o.GetConcurrency()
+	if concurrency <= 1 {
+		for uid, id := range state.Identities {
+			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result, false)
+		}
+		return nil
 	}
 
-	return res, nil
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for uid, id := range state.Identities {
+		wg.Add(1)
+		go func() {
+			sem <- struct{}{}
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			conn, err := o.getConnection()
+			if err != nil {
+				o.LogError(fmt.Errorf("failed to get connection for %s: %w", uid, err))
+				return
+			}
+			defer conn.Close()
+
+			o.syncIdentity(conn, uid, id, searchBaseDN, state.DryRun, state.Result, false)
+		}()
+	}
+
+	wg.Wait()
+
+	return nil
+}
+
+func (o *ADOperator) PartialSync(ctx context.Context, state *operator.PartialSyncState) error {
+	searchBaseDN, _ := o.GetStringConfig("searchBaseDN")
+
+	concurrency := o.GetConcurrency()
+	if concurrency <= 1 {
+		for uid, id := range state.Identities {
+			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result, true)
+		}
+		return nil
+	}
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for uid, id := range state.Identities {
+		wg.Add(1)
+		go func() {
+			sem <- struct{}{}
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			conn, err := o.getConnection()
+			if err != nil {
+				o.LogError(fmt.Errorf("failed to get connection for %s: %w", uid, err))
+				return
+			}
+			defer conn.Close()
+
+			o.syncIdentity(conn, uid, id, searchBaseDN, state.DryRun, state.Result, true)
+		}()
+	}
+
+	wg.Wait()
+
+	return nil
 }
 
 func (o *ADOperator) syncIdentity(
+	conn *ldap.Conn,
 	uid string,
-	enriched *source.Identity,
+	enriched source.Identity,
 	searchBaseDN string,
 	dryRun bool,
 	res *operator.SyncResult,
@@ -91,9 +165,9 @@ func (o *ADOperator) syncIdentity(
 	o.LogInfo("checking user %s (uid: %s)", enriched.Email, uid)
 
 	if allowDelete && enriched.Deleted {
-		if err := o.deleteUser(res, searchBaseDN, enriched, dryRun); err != nil {
+		if err := o.deleteUser(conn, res, searchBaseDN, uid, enriched, dryRun); err != nil {
 			o.LogError(fmt.Errorf("delete %s (uid: %s) failed: %w", enriched.Username, uid, err))
-			res.RecordIdentityError(*enriched, operator.ActionDelete, err)
+			res.RecordError(operator.ActionDelete, uid, enriched.Username, err)
 		}
 		return
 	}
@@ -103,13 +177,13 @@ func (o *ADOperator) syncIdentity(
 		return
 	}
 
-	desiredDN := o.buildDN(*enriched, userBaseDN)
+	desiredDN := o.buildDN(enriched, userBaseDN)
 	attributesToSearch := o.buildAttributesList(enriched)
 
-	sr, err := o.searchUser(searchBaseDN, enriched.Username, attributesToSearch)
+	sr, err := o.searchUser(conn, searchBaseDN, enriched.Username, attributesToSearch)
 	if err != nil {
 		o.LogError(fmt.Errorf("search failed for %s (uid: %s): %w", enriched.Username, uid, err))
-		res.RecordIdentityError(*enriched, operator.ActionNoOp, err)
+		res.RecordError(operator.ActionSkip, uid, enriched.Username, err)
 		return
 	}
 
@@ -118,32 +192,32 @@ func (o *ADOperator) syncIdentity(
 		if dryRun {
 			o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", enriched.Email, uid)
 		} else {
-			if err := o.createUser(desiredDN, enriched); err != nil {
+			if err := o.createUser(conn, desiredDN, enriched); err != nil {
 				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", enriched.Username, uid, err))
-				res.RecordIdentityError(*enriched, operator.ActionCreate, err)
+				res.RecordError(operator.ActionCreate, uid, enriched.Username, err)
 				return
 			}
 			currentMemberOf = make([]string, 0)
 		}
-		res.RecordIdentityCreate(*enriched)
+		res.Record(operator.ActionCreate, uid, enriched.Username)
 	} else {
-		if err := o.updateUser(res, desiredDN, sr.Entries[0], enriched, dryRun); err != nil {
+		if err := o.updateUser(conn, res, desiredDN, *sr.Entries[0], enriched, dryRun); err != nil {
 			o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
-			res.RecordIdentityError(*enriched, operator.ActionUpdate, err)
+			res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
 		}
 		currentMemberOf = sr.Entries[0].GetAttributeValues("memberOf")
 	}
 
-	if err := o.syncGroups(res, desiredDN, currentMemberOf, enriched, dryRun); err != nil {
-		o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
-		res.RecordIdentityError(*enriched, operator.ActionUpdate, fmt.Errorf("group sync failed: %w", err))
+	if err := o.syncGroups(conn, res, desiredDN, currentMemberOf, enriched, dryRun); err != nil {
+		o.LogError(fmt.Errorf("group sync %s (uid: %s) failed: %w", enriched.Username, uid, err))
+		res.RecordError(operator.ActionUpdate, uid, enriched.Username, fmt.Errorf("group sync failed: %w", err))
 	}
 }
 
-func (o *ADOperator) getUserBaseDN(enriched *source.Identity) (string, bool) {
+func (o *ADOperator) getUserBaseDN(enriched source.Identity) (string, bool) {
 	userBaseDNRaw, ok := enriched.Attributes["baseDN"]
 	if !ok {
-		o.LogInfo("baseDN does not exist")
+		o.LogInfo("baseDN does not exist for %s, skipping", enriched.Username)
 		return "", false
 	}
 
@@ -156,7 +230,7 @@ func (o *ADOperator) getUserBaseDN(enriched *source.Identity) (string, bool) {
 	return userBaseDN, true
 }
 
-func (o *ADOperator) buildAttributesList(enriched *source.Identity) []string {
+func (o *ADOperator) buildAttributesList(enriched source.Identity) []string {
 	attributesToSearch := []string{"dn", "memberOf"}
 	for k := range enriched.Attributes {
 		if k == "baseDN" || k == "dn" || k == "adGroups" {
@@ -167,7 +241,7 @@ func (o *ADOperator) buildAttributesList(enriched *source.Identity) []string {
 	return attributesToSearch
 }
 
-func (o *ADOperator) searchUser(searchBaseDN, username string, attributes []string) (*ldap.SearchResult, error) {
+func (o *ADOperator) searchUser(conn *ldap.Conn, searchBaseDN, username string, attributes []string) (*ldap.SearchResult, error) {
 	search := ldap.NewSearchRequest(
 		searchBaseDN,
 		ldap.ScopeWholeSubtree,
@@ -177,17 +251,24 @@ func (o *ADOperator) searchUser(searchBaseDN, username string, attributes []stri
 		nil,
 	)
 
-	return o.conn.Search(search)
+	return conn.Search(search)
 }
 
-func (o *ADOperator) deleteUser(res *operator.SyncResult, searchBaseDN string, id *source.Identity, isDryRun bool) error {
-	sr, err := o.searchUser(searchBaseDN, id.Username, []string{"dn"})
+func (o *ADOperator) deleteUser(
+	conn *ldap.Conn,
+	res *operator.SyncResult,
+	searchBaseDN string,
+	uid string,
+	id source.Identity,
+	isDryRun bool,
+) error {
+	sr, err := o.searchUser(conn, searchBaseDN, id.Username, []string{"dn"})
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}
 
 	if len(sr.Entries) == 0 {
-		res.RecordIdentityDelete(id.Username)
+		res.Record(operator.ActionDelete, uid, id.Username)
 		return nil
 	}
 
@@ -195,16 +276,16 @@ func (o *ADOperator) deleteUser(res *operator.SyncResult, searchBaseDN string, i
 
 	if isDryRun {
 		o.LogInfo("[DRY RUN] Would delete user %s (DN: %s)", id.Username, userDN)
-		res.RecordIdentityDelete(id.Username)
+		res.Record(operator.ActionDelete, uid, id.Username)
 		return nil
 	}
 
 	delReq := ldap.NewDelRequest(userDN, nil)
-	if err := o.conn.Del(delReq); err != nil {
+	if err := conn.Del(delReq); err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
 	}
 
-	res.RecordIdentityDelete(id.Username)
+	res.Record(operator.ActionDelete, uid, id.Username)
 	o.LogInfo("Deleted user %s (DN: %s)", id.Username, userDN)
 	return nil
 }

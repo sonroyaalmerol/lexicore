@@ -3,59 +3,36 @@ package ldap
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"github.com/go-ldap/ldap/v3"
 )
 
-func (o *LDAPOperator) PartialSync(ctx context.Context, state *operator.PartialSyncState) (*operator.SyncResult, error) {
+func (o *LDAPOperator) PartialSync(ctx context.Context, state *operator.PartialSyncState) error {
 	if err := o.Connect(ctx); err != nil {
-		return nil, err
+		return err
 	}
 	defer o.Close()
 
-	res := &operator.SyncResult{}
-
-	userBaseDN, _ := o.GetStringConfig("userBaseDN")
-	rdnAttr, _ := o.GetStringConfig("rdnAttribute")
-	if rdnAttr == "" {
-		rdnAttr = "uid"
-	}
-
 	for uid, id := range state.Identities {
-		enriched := o.EnrichIdentity(id, state.Groups)
-
-		rdnValue := enriched.Username
-		if enriched.UID != "" {
-			rdnValue = enriched.UID
-		}
-
-		var dnBuilder strings.Builder
-		dnBuilder.Grow(len(rdnAttr) + 1 + len(rdnValue) + 1 + len(userBaseDN))
-		dnBuilder.WriteString(rdnAttr)
-		dnBuilder.WriteByte('=')
-		dnBuilder.WriteString(rdnValue)
-		dnBuilder.WriteByte(',')
-		dnBuilder.WriteString(userBaseDN)
-		dn := dnBuilder.String()
+		dn := o.buildDN(id)
 
 		if state.DryRun {
-			res.RecordIdentityUpdate(id, nil)
+			o.LogInfo("[DRY RUN] Would sync user %s (uid: %s)", dn, uid)
 			continue
 		}
 
-		if enriched.Deleted {
+		if id.Deleted {
 			delReq := ldap.NewDelRequest(dn, nil)
 			if err := o.conn.Del(delReq); err != nil {
 				if !ldap.IsErrorWithCode(err, ldap.LDAPResultNoSuchObject) {
 					o.LogError(fmt.Errorf("delete %s (uid: %s) failed: %w", dn, uid, err))
-					res.RecordIdentityError(enriched, operator.ActionDelete, err)
+					state.Result.RecordError(operator.ActionDelete, id.UID, id.Username, err)
 				} else {
-					res.RecordIdentityDelete(id.Username)
+					state.Result.Record(operator.ActionDelete, id.UID, id.Username)
 				}
 			} else {
-				res.RecordIdentityDelete(id.Username)
+				state.Result.Record(operator.ActionDelete, id.UID, id.Username)
 			}
 			continue
 		}
@@ -67,21 +44,22 @@ func (o *LDAPOperator) PartialSync(ctx context.Context, state *operator.PartialS
 		sr, err := o.conn.Search(search)
 
 		if err != nil || len(sr.Entries) == 0 {
-			if err := o.createEntry(dn, &enriched); err != nil {
+			if err := o.createEntry(dn, &id); err != nil {
 				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", dn, uid, err))
-				res.RecordIdentityError(enriched, operator.ActionUpdate, err)
+				state.Result.RecordError(operator.ActionCreate, id.UID, id.Username, err)
 			} else {
-				res.RecordIdentityCreate(id)
+				state.Result.Record(operator.ActionCreate, id.UID, id.Username)
 			}
 		} else {
-			if err := o.updateEntry(dn, &enriched); err != nil {
+			changes, err := o.updateEntry(dn, &id)
+			if err != nil {
 				o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", dn, uid, err))
-				res.RecordIdentityError(enriched, operator.ActionUpdate, err)
-			} else {
-				res.RecordIdentityUpdate(id, nil)
+				state.Result.RecordError(operator.ActionUpdate, id.UID, id.Username, err)
+			} else if len(changes) > 0 {
+				state.Result.Record(operator.ActionUpdate, id.UID, id.Username, changes...)
 			}
 		}
 	}
 
-	return res, nil
+	return nil
 }

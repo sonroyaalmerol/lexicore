@@ -24,15 +24,14 @@ func (f *PrefixTransformer) Transform(
 	}
 
 	for k, identity := range identities {
+		newAttrs := make(map[string]any, len(identity.Attributes))
 		for ak, v := range identity.Attributes {
 			fieldName, hasPrefix := strings.CutPrefix(ak, f.prefix)
-			delete(identity.Attributes, ak)
-
-			if !hasPrefix {
-				continue
+			if hasPrefix {
+				newAttrs[fieldName] = v
 			}
-			identity.Attributes[fieldName] = v
 		}
+		identity.Attributes = newAttrs
 		identities[k] = identity
 	}
 

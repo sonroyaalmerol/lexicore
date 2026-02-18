@@ -54,6 +54,8 @@ func (t *TemplateTransformer) Transform(
 	var buf bytes.Buffer
 
 	for key, identity := range identities {
+		snapshot := snapshotIdentity(identity)
+
 		transformed := identity
 		if transformed.Attributes == nil {
 			transformed.Attributes = make(map[string]any, len(t.templates))
@@ -61,7 +63,7 @@ func (t *TemplateTransformer) Transform(
 
 		for tmplKey, tmpl := range t.templates {
 			buf.Reset()
-			if err := tmpl.Execute(&buf, identity); err != nil {
+			if err := tmpl.Execute(&buf, snapshot); err != nil {
 				return nil, nil, fmt.Errorf(
 					"failed to execute template %s: %w",
 					tmplKey,
@@ -77,6 +79,40 @@ func (t *TemplateTransformer) Transform(
 	}
 
 	return identities, groups, nil
+}
+
+func snapshotIdentity(id source.Identity) source.Identity {
+	cp := id
+	if id.Attributes != nil {
+		cp.Attributes = make(map[string]any, len(id.Attributes))
+		for k, v := range id.Attributes {
+			cp.Attributes[k] = snapshotValue(v)
+		}
+	}
+	return cp
+}
+
+func snapshotValue(v any) any {
+	switch val := v.(type) {
+	case []string:
+		cp := make([]string, len(val))
+		copy(cp, val)
+		return cp
+	case []any:
+		cp := make([]any, len(val))
+		for i, item := range val {
+			cp[i] = snapshotValue(item)
+		}
+		return cp
+	case map[string]any:
+		cp := make(map[string]any, len(val))
+		for k, item := range val {
+			cp[k] = snapshotValue(item)
+		}
+		return cp
+	default:
+		return v
+	}
 }
 
 func parseTemplateResult(result string) any {

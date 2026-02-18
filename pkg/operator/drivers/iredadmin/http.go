@@ -15,88 +15,150 @@ import (
 	"github.com/sethvargo/go-password/password"
 )
 
+type attributeConfig struct {
+	apiParam      string
+	onCreate      bool
+	onUpdate      bool
+	userDataField func(UserData) []string
+	isSlice       bool
+}
+
+var attributeConfigs = map[string]attributeConfig{
+	AttributeLanguage: {
+		apiParam:      "language",
+		onCreate:      true,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.PreferredLanguage },
+		isSlice:       false,
+	},
+	AttributeQuota: {
+		apiParam:      "quota",
+		onCreate:      true,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.MailQuota },
+		isSlice:       false,
+	},
+	AttributeGivenName: {
+		apiParam:      "givenName",
+		onCreate:      false,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.GivenName },
+		isSlice:       false,
+	},
+	AttributeSN: {
+		apiParam:      "sn",
+		onCreate:      false,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.SN },
+		isSlice:       false,
+	},
+	AttributeStatus: {
+		apiParam:      "accountStatus",
+		onCreate:      false,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.AccountStatus },
+		isSlice:       false,
+	},
+	AttributeEnabledServices: {
+		apiParam:      "services",
+		onCreate:      false,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.EnabledService },
+		isSlice:       true,
+	},
+	AttributeForwardingAddresses: {
+		apiParam:      "forwarding",
+		onCreate:      false,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.MailForwardingAddress },
+		isSlice:       true,
+	},
+	AttributeAliases: {
+		apiParam:      "aliases",
+		onCreate:      false,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.MailingAliases },
+		isSlice:       true,
+	},
+	AttributeCN: {
+		apiParam:      "name",
+		onCreate:      false,
+		onUpdate:      true,
+		userDataField: func(u UserData) []string { return u.CN },
+		isSlice:       false,
+	},
+}
+
+func formatAttrValue(attrVal any) string {
+	switch v := attrVal.(type) {
+	case []string:
+		return strings.Join(v, ",")
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			parts = utils.AppendUnique(parts, fmt.Sprintf("%v", item))
+		}
+		return strings.Join(parts, ",")
+	default:
+		return fmt.Sprintf("%v", attrVal)
+	}
+}
+
 func (o *IRedAdminOperator) createUser(
 	ctx context.Context,
-	id *source.Identity,
+	id source.Identity,
 ) error {
-	res, err := password.Generate(64, 10, 10, false, false)
+	pwd, err := password.Generate(64, 10, 10, false, true)
 	if err != nil {
 		return err
 	}
 
-	escaped := url.PathEscape(id.Email)
-	var param = url.Values{}
-	param.Set("name", id.DisplayName)
-	param.Set("password", res)
+	createParams := url.Values{}
+	createParams.Set("name", id.DisplayName)
+	createParams.Set("password", pwd)
 
-	var paramForUpdate = url.Values{}
-	hasUpdate := false
-	hasMailingList := false
+	updateParams := url.Values{}
+	var mailingLists []string
 
-	for k, v := range id.Attributes {
-		switch k {
-		case AttributeLanguage:
-			param.Set("language", fmt.Sprintf("%v", v))
-		case AttributeQuota:
-			param.Set("quota", fmt.Sprintf("%v", v))
-		case AttributeGivenName:
-			paramForUpdate.Set("gn", fmt.Sprintf("%v", v))
-			hasUpdate = true
-		case AttributeSN:
-			paramForUpdate.Set("sn", fmt.Sprintf("%v", v))
-			hasUpdate = true
-		case AttributeStatus:
-			paramForUpdate.Set("accountStatus", fmt.Sprintf("%v", v))
-			hasUpdate = true
-		case AttributeEnabledServices:
-			paramForUpdate.Set("services", fmt.Sprintf("%v", v))
-			hasUpdate = true
-		case AttributeForwardingAddresses:
-			paramForUpdate.Set("forwarding", fmt.Sprintf("%v", v))
-			hasUpdate = true
-		case AttributeAliases:
-			paramForUpdate.Set("aliases", fmt.Sprintf("%v", v))
-			hasUpdate = true
-		case AttributeMailingLists:
-			hasMailingList = true
-		}
-	}
-
-	var payload = bytes.NewBufferString(param.Encode())
-	path := fmt.Sprintf("%s/api/user/%s", o.baseURL, escaped)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", path, payload)
-	if err != nil {
-		return err
-	}
-
-	_, err = execHttp[any](o, ctx, req)
-	if err != nil {
-		return err
-	}
-
-	if hasUpdate {
-		var updatePayload = bytes.NewBufferString(paramForUpdate.Encode())
-		req, err = http.NewRequestWithContext(ctx, "PUT", path, updatePayload)
-		if err != nil {
-			return err
-		}
-
-		_, err = execHttp[any](o, ctx, req)
-		if err != nil {
-			return err
-		}
-	}
-
-	if hasMailingList {
-		mls, ok := id.Attributes[AttributeMailingLists].([]string)
-		if ok {
-			for _, ml := range mls {
-				err := o.subscribeUserToList(ctx, ml, []string{id.Email})
-				if err != nil {
-					o.LogError(fmt.Errorf("failed to subscribe user to list: %v", err))
-				}
+	for attrKey, attrVal := range id.Attributes {
+		if attrKey == AttributeMailingLists {
+			if mls, ok := attrVal.([]string); ok {
+				mailingLists = mls
+			} else {
+				o.LogError(fmt.Errorf("mailingLists attribute is not []string for user %s", id.Email))
 			}
+			continue
+		}
+
+		config, exists := attributeConfigs[attrKey]
+		if !exists {
+			continue
+		}
+
+		vStr := formatAttrValue(attrVal)
+		if config.onCreate {
+			createParams.Set(config.apiParam, vStr)
+		}
+		if config.onUpdate {
+			updateParams.Set(config.apiParam, vStr)
+		}
+	}
+
+	path := fmt.Sprintf("%s/api/user/%s", o.baseURL, url.PathEscape(id.Email))
+
+	if err := o.doRequest(ctx, "POST", path, createParams); err != nil {
+		return err
+	}
+
+	if len(updateParams) > 0 {
+		if err := o.doRequest(ctx, "PUT", path, updateParams); err != nil {
+			return err
+		}
+	}
+
+	for _, ml := range mailingLists {
+		if err := o.subscribeToMailingList(ctx, ml, []string{id.Email}); err != nil {
+			o.LogError(fmt.Errorf("failed to subscribe user %s to list %s: %v", id.Email, ml, err))
 		}
 	}
 
@@ -105,151 +167,98 @@ func (o *IRedAdminOperator) createUser(
 
 func (o *IRedAdminOperator) updateUser(
 	ctx context.Context,
+	id source.Identity,
 	result *operator.SyncResult,
-	newUser *UserData,
-	current *UserData,
+	newUser UserData,
+	current UserData,
 	dryRun bool,
 ) error {
+	if len(newUser.UID) == 0 || len(newUser.Mail) == 0 {
+		return fmt.Errorf("invalid user data: missing UID or Mail")
+	}
+
 	data := url.Values{}
-
-	hasDiff := false
-	hasDiffMl := false
-
-	diff := make(map[string]string)
-	defer func() {
-		if len(diff) > 0 {
-			result.RecordIdentityUpdateManual(newUser.UID[0], newUser.Mail[0], diff)
-		}
-	}()
+	var changes []operator.Change
 	mail := getStringFromArray(current.Mail)
 
-	newCN := getStringFromArray(newUser.CN)
-	if getStringFromArray(current.CN) != newCN {
-		hasDiff = true
-		data.Set("name", newCN)
-	}
+	for attrKey, config := range attributeConfigs {
+		if !config.onUpdate {
+			continue
+		}
 
-	if !stringIsEqual(current.GivenName, newUser.GivenName) && len(newUser.GivenName) > 0 {
-		hasDiff = true
-		data.Set("givenName", strings.Join(newUser.GivenName, ","))
-		diff["givenName"] = utils.DiffString(getStringFromArray(current.GivenName), getStringFromArray(newUser.GivenName))
-	}
-	if !stringIsEqual(current.SN, newUser.SN) && len(newUser.SN) > 0 {
-		hasDiff = true
-		data.Set("sn", strings.Join(newUser.SN, ","))
-		diff["sn"] = utils.DiffString(getStringFromArray(current.SN), getStringFromArray(newUser.SN))
-	}
-	if !stringIsEqual(current.PreferredLanguage, newUser.PreferredLanguage) && len(newUser.PreferredLanguage) > 0 {
-		hasDiff = true
-		data.Set("language", strings.Join(newUser.PreferredLanguage, ","))
-		diff["language"] = utils.DiffString(getStringFromArray(current.PreferredLanguage), getStringFromArray(newUser.PreferredLanguage))
-	}
-	if !stringIsEqual(current.MailQuota, newUser.MailQuota) && len(newUser.MailQuota) > 0 {
-		hasDiff = true
-		data.Set("quota", strings.Join(newUser.MailQuota, ","))
-		diff["quota"] = utils.DiffString(getStringFromArray(current.MailQuota), getStringFromArray(newUser.MailQuota))
-	}
-	if !stringIsEqual(current.AccountStatus, newUser.AccountStatus) && len(newUser.AccountStatus) > 0 {
-		hasDiff = true
-		data.Set("accountStatus", strings.Join(newUser.AccountStatus, ","))
-		diff["accountStatus"] = utils.DiffString(getStringFromArray(current.AccountStatus), getStringFromArray(newUser.AccountStatus))
-	}
-	if !utils.SlicesAreEqual(current.EnabledService, newUser.EnabledService) {
-		hasDiff = true
-		data.Set("services", strings.Join(newUser.EnabledService, ","))
-		diff["services"] = utils.DiffArrString(current.EnabledService, newUser.EnabledService)
-	}
-	if !utils.SlicesAreEqual(current.MailingAliases, newUser.MailingAliases) {
-		hasDiff = true
-		data.Set("aliases", strings.Join(newUser.MailingAliases, ","))
-		diff["aliases"] = utils.DiffArrString(current.MailingAliases, newUser.MailingAliases)
-	}
-	if !utils.SlicesAreEqual(current.MailForwardingAddress, newUser.MailForwardingAddress) {
-		hasDiff = true
-		data.Set("forwarding", strings.Join(newUser.MailForwardingAddress, ","))
-		diff["forwarding"] = utils.DiffArrString(current.MailForwardingAddress, newUser.MailForwardingAddress)
-	}
-	if !utils.SlicesAreEqual(current.MailingLists, newUser.MailingLists) {
-		hasDiffMl = true
-		diff["mailingLists"] = utils.DiffArrString(current.MailingLists, newUser.MailingLists)
-	}
+		currentVal := config.userDataField(current)
+		newVal := config.userDataField(newUser)
 
-	if !hasDiff && !hasDiffMl {
-		return nil
-	}
+		if len(newVal) == 0 {
+			continue
+		}
 
-	escaped := url.PathEscape(mail)
-	path := fmt.Sprintf("%s/api/user/%s", o.baseURL, escaped)
-
-	if hasDiff {
-		if !dryRun {
-			req, err := http.NewRequestWithContext(ctx, "PUT", path, bytes.NewBufferString(data.Encode()))
-			if err != nil {
-				return err
-			}
-
-			_, err = execHttp[any](o, ctx, req)
-			if err != nil {
-				return err
-			}
+		var isDifferent bool
+		if config.isSlice {
+			isDifferent = !utils.SlicesAreEqual(currentVal, newVal)
 		} else {
-			o.LogInfo("[DRY RUN] Would update user %s (uid: %s) | Encoded changes: %s",
-				mail, getStringFromArray(current.UID), data.Encode())
+			isDifferent = !stringIsEqual(currentVal, newVal)
+		}
+
+		if isDifferent {
+			data.Set(config.apiParam, strings.Join(newVal, ","))
+			changes = append(changes, operator.AttrChange(
+				attrKey,
+				strings.Join(currentVal, ","),
+				strings.Join(newVal, ","),
+			))
 		}
 	}
 
-	if !hasDiffMl {
+	addedLists, deletedLists := utils.StringArrDiff(current.MailingLists, newUser.MailingLists)
+
+	for _, ml := range addedLists {
+		changes = append(changes, operator.MembershipAdded(ml))
+	}
+	for _, ml := range deletedLists {
+		changes = append(changes, operator.MembershipRemoved(ml))
+	}
+
+	if len(changes) == 0 {
 		return nil
 	}
 
-	added, deleted := utils.StringArrDiff(current.MailingLists, newUser.MailingLists)
-	for _, ml := range added {
+	path := fmt.Sprintf("%s/api/user/%s", o.baseURL, url.PathEscape(mail))
+
+	if len(data) > 0 {
 		if dryRun {
-			o.LogInfo("[DRY RUN] Would subscribe user %s (uid: %s) to %s",
-				mail, getStringFromArray(current.UID), ml)
-			continue
-		}
-		err := o.subscribeUserToList(ctx, ml, []string{mail})
-		if err != nil {
-			o.LogError(fmt.Errorf("failed to subscribe user to list: %v", err))
+			o.LogInfo("[DRY RUN] Would update user %s (uid: %s)", mail, getStringFromArray(current.UID))
+		} else {
+			if err := o.doRequest(ctx, "PUT", path, data); err != nil {
+				return err
+			}
 		}
 	}
 
-	for _, ml := range deleted {
-		if dryRun {
-			o.LogInfo("[DRY RUN] Would unsubscribe user %s (uid: %s) from %s",
-				mail, getStringFromArray(current.UID), ml)
-			continue
+	if !dryRun {
+		for _, ml := range addedLists {
+			if err := o.subscribeToMailingList(ctx, ml, []string{mail}); err != nil {
+				o.LogError(fmt.Errorf("failed to subscribe user to list %s: %v", ml, err))
+			}
 		}
-		err := o.unsubscribeUserFromList(ctx, ml, []string{mail})
-		if err != nil {
-			o.LogError(fmt.Errorf("failed to unsubscribe user to list: %v", err))
+		for _, ml := range deletedLists {
+			if err := o.unsubscribeFromMailingList(ctx, ml, []string{mail}); err != nil {
+				o.LogError(fmt.Errorf("failed to unsubscribe user from list %s: %v", ml, err))
+			}
 		}
 	}
 
+	result.Record(operator.ActionUpdate, newUser.UID[0], newUser.Mail[0], changes...)
 	return nil
 }
 
 func (o *IRedAdminOperator) deleteUser(ctx context.Context, email string, days int) error {
-	escaped := url.PathEscape(email)
-	path := fmt.Sprintf("%s/api/user/%s/keep_mailbox_days/%d", o.baseURL, escaped, days)
-
-	req, err := http.NewRequestWithContext(ctx, "DELETE", path, nil)
-	if err != nil {
-		return err
-	}
-
-	_, err = execHttp[any](o, ctx, req)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	path := fmt.Sprintf("%s/api/user/%s/keep_mailbox_days/%d", o.baseURL, url.PathEscape(email), days)
+	return o.doRequest(ctx, "DELETE", path, nil)
 }
 
 func (o *IRedAdminOperator) getUsers(ctx context.Context) ([]string, error) {
-	escaped := url.PathEscape(o.domain)
-	path := fmt.Sprintf("%s/api/users/%s?email_only=yes", o.baseURL, escaped)
+	path := fmt.Sprintf("%s/api/users/%s?email_only=yes", o.baseURL, url.PathEscape(o.domain))
 	req, err := http.NewRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
@@ -263,65 +272,55 @@ func (o *IRedAdminOperator) getUsers(ctx context.Context) ([]string, error) {
 	return resp.Data, nil
 }
 
-func (o *IRedAdminOperator) getUser(ctx context.Context, email string) (*UserData, error) {
-	escaped := url.PathEscape(email)
-	path := fmt.Sprintf("%s/api/user/%s", o.baseURL, escaped)
+func (o *IRedAdminOperator) getUser(ctx context.Context, email string) (UserData, error) {
+	path := fmt.Sprintf("%s/api/user/%s", o.baseURL, url.PathEscape(email))
 	req, err := http.NewRequestWithContext(ctx, "GET", path, nil)
 	if err != nil {
-		return nil, err
+		return UserData{}, err
 	}
 
 	resp, err := execHttp[UserData](o, ctx, req)
 	if err != nil {
-		return nil, err
+		return UserData{}, err
 	}
 
-	return &resp.Data, nil
+	return resp.Data, nil
 }
 
-func (o *IRedAdminOperator) subscribeUserToList(ctx context.Context, mailingList string, users []string) error {
-	escaped := url.PathEscape(mailingList)
-	subs := strings.Join(users, ",")
+func (o *IRedAdminOperator) subscribeToMailingList(ctx context.Context, mailingList string, users []string) error {
+	params := url.Values{}
+	params.Set("add_subscribers", strings.Join(users, ","))
+	params.Set("require_confirm", "no")
 
-	var param = url.Values{}
-	param.Set("add_subscribers", subs)
-	param.Set("require_confirm", "no")
-	var payload = bytes.NewBufferString(param.Encode())
+	path := fmt.Sprintf("%s/api/ml/%s", o.baseURL, url.PathEscape(mailingList))
+	return o.doRequest(ctx, "PUT", path, params)
+}
 
-	path := fmt.Sprintf("%s/api/ml/%s", o.baseURL, escaped)
-	req, err := http.NewRequestWithContext(ctx, "PUT", path, payload)
+func (o *IRedAdminOperator) unsubscribeFromMailingList(ctx context.Context, mailingList string, users []string) error {
+	params := url.Values{}
+	params.Set("remove_subscribers", strings.Join(users, ","))
+
+	path := fmt.Sprintf("%s/api/ml/%s", o.baseURL, url.PathEscape(mailingList))
+	return o.doRequest(ctx, "PUT", path, params)
+}
+
+func (o *IRedAdminOperator) doRequest(ctx context.Context, method, path string, params url.Values) error {
+	var body *bytes.Buffer
+	if params != nil {
+		body = bytes.NewBufferString(params.Encode())
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, path, body)
 	if err != nil {
 		return err
+	}
+
+	if params != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 
 	_, err = execHttp[any](o, ctx, req)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (o *IRedAdminOperator) unsubscribeUserFromList(ctx context.Context, mailingList string, users []string) error {
-	escaped := url.PathEscape(mailingList)
-	subs := strings.Join(users, ",")
-
-	var param = url.Values{}
-	param.Set("remove_subscribers", subs)
-	var payload = bytes.NewBufferString(param.Encode())
-
-	path := fmt.Sprintf("%s/api/ml/%s", o.baseURL, escaped)
-	req, err := http.NewRequestWithContext(ctx, "PUT", path, payload)
-	if err != nil {
-		return err
-	}
-
-	_, err = execHttp[any](o, ctx, req)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func execHttp[T any](

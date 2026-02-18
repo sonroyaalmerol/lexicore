@@ -53,39 +53,39 @@ func (o *LDAPOperator) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*operator.SyncResult, error) {
-	if err := o.Connect(ctx); err != nil {
-		return nil, err
-	}
-	defer o.Close()
-
-	res := &operator.SyncResult{}
-
+func (o *LDAPOperator) buildDN(id source.Identity) string {
 	userBaseDN, _ := o.GetStringConfig("userBaseDN")
 	rdnAttr, _ := o.GetStringConfig("rdnAttribute")
 	if rdnAttr == "" {
 		rdnAttr = "uid"
 	}
 
+	rdnValue := id.Username
+	if id.UID != "" {
+		rdnValue = id.UID
+	}
+
+	var dnBuilder strings.Builder
+	dnBuilder.Grow(len(rdnAttr) + 1 + len(rdnValue) + 1 + len(userBaseDN))
+	dnBuilder.WriteString(rdnAttr)
+	dnBuilder.WriteByte('=')
+	dnBuilder.WriteString(rdnValue)
+	dnBuilder.WriteByte(',')
+	dnBuilder.WriteString(userBaseDN)
+	return dnBuilder.String()
+}
+
+func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) error {
+	if err := o.Connect(ctx); err != nil {
+		return err
+	}
+	defer o.Close()
+
 	for uid, id := range state.Identities {
-		enriched := o.EnrichIdentity(id, state.Groups)
-
-		rdnValue := enriched.Username
-		if enriched.UID != "" {
-			rdnValue = enriched.UID
-		}
-
-		var dnBuilder strings.Builder
-		dnBuilder.Grow(len(rdnAttr) + 1 + len(rdnValue) + 1 + len(userBaseDN))
-		dnBuilder.WriteString(rdnAttr)
-		dnBuilder.WriteByte('=')
-		dnBuilder.WriteString(rdnValue)
-		dnBuilder.WriteByte(',')
-		dnBuilder.WriteString(userBaseDN)
-		dn := dnBuilder.String()
+		dn := o.buildDN(id)
 
 		if state.DryRun {
-			res.RecordIdentityUpdate(id, nil)
+			o.LogInfo("[DRY RUN] Would sync user %s (uid: %s)", dn, uid)
 			continue
 		}
 
@@ -96,23 +96,24 @@ func (o *LDAPOperator) Sync(ctx context.Context, state *operator.SyncState) (*op
 		sr, err := o.conn.Search(search)
 
 		if err != nil || len(sr.Entries) == 0 {
-			if err := o.createEntry(dn, &enriched); err != nil {
+			if err := o.createEntry(dn, &id); err != nil {
 				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", dn, uid, err))
-				res.RecordIdentityError(enriched, operator.ActionUpdate, err)
+				state.Result.RecordError(operator.ActionCreate, id.UID, id.Username, err)
 			} else {
-				res.RecordIdentityCreate(id)
+				state.Result.Record(operator.ActionCreate, id.UID, id.Username)
 			}
 		} else {
-			if err := o.updateEntry(dn, &enriched); err != nil {
+			changes, err := o.updateEntry(dn, &id)
+			if err != nil {
 				o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", dn, uid, err))
-				res.RecordIdentityError(enriched, operator.ActionUpdate, err)
-			} else {
-				res.RecordIdentityUpdate(id, nil)
+				state.Result.RecordError(operator.ActionUpdate, id.UID, id.Username, err)
+			} else if len(changes) > 0 {
+				state.Result.Record(operator.ActionUpdate, id.UID, id.Username, changes...)
 			}
 		}
 	}
 
-	return res, nil
+	return nil
 }
 
 func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
@@ -139,20 +140,21 @@ func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
 	return o.conn.Add(addReq)
 }
 
-func (o *LDAPOperator) updateEntry(dn string, id *source.Identity) error {
+func (o *LDAPOperator) updateEntry(dn string, id *source.Identity) ([]operator.Change, error) {
 	modReq := ldap.NewModifyRequest(dn, nil)
-	hasChanges := false
+	var changes []operator.Change
 
 	for k, v := range id.Attributes {
-		modReq.Replace(k, []string{fmt.Sprintf("%v", v)})
-		hasChanges = true
+		val := fmt.Sprintf("%v", v)
+		modReq.Replace(k, []string{val})
+		changes = append(changes, operator.AttrChange(k, "", val))
 	}
 
-	if !hasChanges {
-		return nil
+	if len(changes) == 0 {
+		return nil, nil
 	}
 
-	return o.conn.Modify(modReq)
+	return changes, o.conn.Modify(modReq)
 }
 
 func (o *LDAPOperator) Close() error {

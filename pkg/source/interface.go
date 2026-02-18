@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"maps"
 )
 
 type SourceData struct {
@@ -27,6 +28,30 @@ type Group struct {
 	Attributes  map[string]any
 	Description string
 	Deleted     bool
+}
+
+func (id Identity) DeepCopy() Identity {
+	clone := id
+
+	clone.Groups = make([]string, len(id.Groups))
+	copy(clone.Groups, id.Groups)
+
+	clone.Attributes = make(map[string]any, len(id.Attributes))
+	maps.Copy(clone.Attributes, id.Attributes)
+
+	return clone
+}
+
+func (g Group) DeepCopy() Group {
+	clone := g
+
+	clone.Members = make([]string, len(g.Members))
+	copy(clone.Members, g.Members)
+
+	clone.Attributes = make(map[string]any, len(g.Attributes))
+	maps.Copy(clone.Attributes, g.Attributes)
+
+	return clone
 }
 
 type Source interface {
