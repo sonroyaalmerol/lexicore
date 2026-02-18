@@ -47,7 +47,11 @@ func (w *syncWorker) submit(fn func()) bool {
 	}
 
 	w.wg.Go(func() {
-		w.sem <- struct{}{}
+		select {
+		case w.sem <- struct{}{}:
+		case <-w.ctx.Done():
+			return
+		}
 		defer func() { <-w.sem }()
 		fn()
 	})
@@ -222,6 +226,7 @@ func (o *DovecotOperator) applyACLChanges(ctx context.Context) error {
 	worker := o.newSyncWorker(ctx)
 
 	changes := make(map[string][]operator.Change)
+	var changesMu sync.Mutex
 
 	sc.allMailboxes.Range(func(mailboxKey string, _ struct{}) bool {
 		if !worker.submit(func() {
@@ -268,6 +273,17 @@ func (o *DovecotOperator) applyACLChanges(ctx context.Context) error {
 			}
 
 			aclPath := fmt.Sprintf("%s/%s", sharedFolder, mailboxPath)
+
+			changesMu.Lock()
+			defer changesMu.Unlock()
+
+			if len(diff.Old["anyone"])+len(diff.New["anyone"]) > 0 {
+				changes["anyone"] = append(
+					changes["anyone"],
+					operator.AttrChange(aclPath, diff.Old["anyone"], diff.New["anyone"]),
+				)
+			}
+
 			for uid := range affectedUsers {
 				identity, ok := sc.state.Identities[uid]
 				if !ok {

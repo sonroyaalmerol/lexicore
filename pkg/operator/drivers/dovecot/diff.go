@@ -90,6 +90,8 @@ func (o *DovecotOperator) calculateACLsToRemove(
 ) {
 	if len(anyoneACLs) > 0 && o.removeAnyoneACL {
 		diff.ToRemove = append(diff.ToRemove, "anyone")
+		diff.New["anyone"] = ""
+		diff.Old["anyone"] = utils.SliceToSortedString(anyoneACLs, ",")
 	}
 
 	for username := range currentUserACLs {
