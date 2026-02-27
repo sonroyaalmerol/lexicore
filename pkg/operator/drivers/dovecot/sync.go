@@ -118,62 +118,60 @@ func (o *DovecotOperator) processIdentity(
 ) {
 	sc := syncCtxFrom(ctx)
 
-	if !identity.Deleted {
-		if aclsAny, ok := identity.Attributes["acls"]; ok {
-			if aclsArr, isArr := aclsAny.([]any); isArr {
-				acls := make([]*ACL, 0, len(aclsArr))
-				for _, v := range aclsArr {
-					if s, isStr := v.(string); isStr {
-						if acl := parseACL(s); acl != nil {
-							acls = append(acls, acl)
-						}
+	if aclsAny, ok := identity.Attributes["acls"]; ok {
+		if aclsArr, isArr := aclsAny.([]any); isArr {
+			acls := make([]*ACL, 0, len(aclsArr))
+			for _, v := range aclsArr {
+				if s, isStr := v.(string); isStr {
+					if acl := parseACL(s); acl != nil {
+						acls = append(acls, acl)
 					}
 				}
+			}
 
-				if len(acls) > 0 {
-					o.LogInfo(
-						"checking user %s (uid: %s)",
-						identity.Email, uid,
+			if len(acls) > 0 {
+				o.LogInfo(
+					"checking user %s (uid: %s)",
+					identity.Email, uid,
+				)
+
+				merged := o.mergeSharedMailAcls(acls)
+				expanded, err := o.expandACLPatterns(ctx, merged)
+				if err != nil {
+					o.LogError(fmt.Errorf(
+						"failed to expand ACL patterns for user %s: %w",
+						identity.Username, err,
+					))
+					sc.state.Result.RecordError(
+						operator.ActionSkip,
+						uid, identity.Username, err,
 					)
+				} else {
+					for _, acl := range expanded {
+						mailboxKey := acl.Key()
+						sc.allMailboxes.Store(mailboxKey, struct{}{})
 
-					merged := o.mergeSharedMailAcls(acls)
-					expanded, err := o.expandACLPatterns(ctx, merged)
-					if err != nil {
-						o.LogError(fmt.Errorf(
-							"failed to expand ACL patterns for user %s: %w",
-							identity.Username, err,
-						))
-						sc.state.Result.RecordError(
-							operator.ActionSkip,
-							uid, identity.Username, err,
+						sc.mailboxDesiredACLs.Compute(
+							mailboxKey,
+							func(existing map[string][]string, loaded bool) (map[string][]string, xsync.ComputeOp) {
+								if !loaded {
+									existing = make(map[string][]string)
+								}
+								existing[identity.Username] = acl.RightsSlice()
+								return existing, xsync.UpdateOp
+							},
 						)
-					} else {
-						for _, acl := range expanded {
-							mailboxKey := acl.Key()
-							sc.allMailboxes.Store(mailboxKey, struct{}{})
 
-							sc.mailboxDesiredACLs.Compute(
-								mailboxKey,
-								func(existing map[string][]string, loaded bool) (map[string][]string, xsync.ComputeOp) {
-									if !loaded {
-										existing = make(map[string][]string)
-									}
-									existing[identity.Username] = acl.RightsSlice()
-									return existing, xsync.UpdateOp
-								},
-							)
-
-							sc.usersAffectedByMailbox.Compute(
-								mailboxKey,
-								func(existing map[string]struct{}, loaded bool) (map[string]struct{}, xsync.ComputeOp) {
-									if !loaded {
-										existing = make(map[string]struct{})
-									}
-									existing[uid] = struct{}{}
-									return existing, xsync.UpdateOp
-								},
-							)
-						}
+						sc.usersAffectedByMailbox.Compute(
+							mailboxKey,
+							func(existing map[string]struct{}, loaded bool) (map[string]struct{}, xsync.ComputeOp) {
+								if !loaded {
+									existing = make(map[string]struct{})
+								}
+								existing[uid] = struct{}{}
+								return existing, xsync.UpdateOp
+							},
+						)
 					}
 				}
 			}

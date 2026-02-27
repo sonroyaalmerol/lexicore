@@ -82,7 +82,7 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) error 
 	concurrency := o.GetConcurrency()
 	if concurrency <= 1 {
 		for uid, id := range state.Identities {
-			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result, false)
+			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result)
 		}
 		return nil
 	}
@@ -106,7 +106,7 @@ func (o *ADOperator) Sync(ctx context.Context, state *operator.SyncState) error 
 			}
 			defer conn.Close()
 
-			o.syncIdentity(conn, uid, id, searchBaseDN, state.DryRun, state.Result, false)
+			o.syncIdentity(conn, uid, id, searchBaseDN, state.DryRun, state.Result)
 		}()
 	}
 
@@ -121,7 +121,7 @@ func (o *ADOperator) PartialSync(ctx context.Context, state *operator.PartialSyn
 	concurrency := o.GetConcurrency()
 	if concurrency <= 1 {
 		for uid, id := range state.Identities {
-			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result, false)
+			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result)
 		}
 		return nil
 	}
@@ -145,7 +145,7 @@ func (o *ADOperator) PartialSync(ctx context.Context, state *operator.PartialSyn
 			}
 			defer conn.Close()
 
-			o.syncIdentity(conn, uid, id, searchBaseDN, state.DryRun, state.Result, true)
+			o.syncIdentity(conn, uid, id, searchBaseDN, state.DryRun, state.Result)
 		}()
 	}
 
@@ -161,17 +161,8 @@ func (o *ADOperator) syncIdentity(
 	searchBaseDN string,
 	dryRun bool,
 	res *operator.SyncResult,
-	allowDelete bool,
 ) {
 	o.LogInfo("checking user %s (uid: %s)", enriched.Email, uid)
-
-	if allowDelete && enriched.Deleted {
-		if err := o.deleteUser(conn, res, searchBaseDN, uid, enriched, dryRun); err != nil {
-			o.LogError(fmt.Errorf("delete %s (uid: %s) failed: %w", enriched.Username, uid, err))
-			res.RecordError(operator.ActionDelete, uid, enriched.Username, err)
-		}
-		return
-	}
 
 	userBaseDN, ok := o.getUserBaseDN(enriched)
 	if !ok {
@@ -190,24 +181,16 @@ func (o *ADOperator) syncIdentity(
 
 	var currentMemberOf []string
 	if len(sr.Entries) == 0 {
-		if dryRun {
-			o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", enriched.Email, uid)
-		} else {
-			if err := o.createUser(conn, desiredDN, enriched); err != nil {
-				o.LogError(fmt.Errorf("create %s (uid: %s) failed: %w", enriched.Username, uid, err))
-				res.RecordError(operator.ActionCreate, uid, enriched.Username, err)
-				return
-			}
-			currentMemberOf = make([]string, 0)
-		}
-		res.Record(operator.ActionCreate, uid, enriched.Username)
-	} else {
-		if err := o.updateUser(conn, res, desiredDN, *sr.Entries[0], enriched, dryRun); err != nil {
-			o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
-			res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
-		}
-		currentMemberOf = sr.Entries[0].GetAttributeValues("memberOf")
+		o.LogError(fmt.Errorf("search failed for %s (uid: %s): user not found", enriched.Username, uid))
+		res.RecordError(operator.ActionSkip, uid, enriched.Username, err)
+		return
 	}
+
+	if err := o.updateUser(conn, res, desiredDN, *sr.Entries[0], enriched, dryRun); err != nil {
+		o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
+		res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
+	}
+	currentMemberOf = sr.Entries[0].GetAttributeValues("memberOf")
 
 	if err := o.syncGroups(conn, res, desiredDN, currentMemberOf, enriched, dryRun); err != nil {
 		o.LogError(fmt.Errorf("group sync %s (uid: %s) failed: %w", enriched.Username, uid, err))
@@ -253,42 +236,6 @@ func (o *ADOperator) searchUser(conn *ldap.Conn, searchBaseDN, username string, 
 	)
 
 	return conn.Search(search)
-}
-
-func (o *ADOperator) deleteUser(
-	conn *ldap.Conn,
-	res *operator.SyncResult,
-	searchBaseDN string,
-	uid string,
-	id source.Identity,
-	isDryRun bool,
-) error {
-	sr, err := o.searchUser(conn, searchBaseDN, id.Username, []string{"dn"})
-	if err != nil {
-		return fmt.Errorf("search failed: %w", err)
-	}
-
-	if len(sr.Entries) == 0 {
-		res.Record(operator.ActionDelete, uid, id.Username)
-		return nil
-	}
-
-	userDN := sr.Entries[0].DN
-
-	if isDryRun {
-		o.LogInfo("[DRY RUN] Would delete user %s (DN: %s)", id.Username, userDN)
-		res.Record(operator.ActionDelete, uid, id.Username)
-		return nil
-	}
-
-	delReq := ldap.NewDelRequest(userDN, nil)
-	if err := conn.Del(delReq); err != nil {
-		return fmt.Errorf("failed to delete user: %w", err)
-	}
-
-	res.Record(operator.ActionDelete, uid, id.Username)
-	o.LogInfo("Deleted user %s (DN: %s)", id.Username, userDN)
-	return nil
 }
 
 func (o *ADOperator) Close() error {

@@ -326,9 +326,7 @@ func (m *Manager) reconcileTarget(
 		zap.String("target", targetName),
 		zap.String("type", syncType),
 		zap.Duration("duration", time.Since(startTime)),
-		zap.Int("created", counts[string(operator.ActionCreate)]),
 		zap.Int("updated", counts[string(operator.ActionUpdate)]),
-		zap.Int("deleted", counts[string(operator.ActionDelete)]),
 		zap.Int("skipped", counts[string(operator.ActionSkip)]),
 		zap.Int("errors", errCount),
 	)

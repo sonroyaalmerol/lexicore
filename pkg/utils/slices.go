@@ -12,11 +12,13 @@ func SlicesAreEqual(a, b []string) bool {
 
 	counts := make(map[string]int)
 
-	for _, s := range a {
+	for _, sRaw := range a {
+		s := strings.TrimSpace(sRaw)
 		counts[s]++
 	}
 
-	for _, s := range b {
+	for _, sRaw := range b {
+		s := strings.TrimSpace(sRaw)
 		counts[s]--
 		if counts[s] < 0 {
 			return false

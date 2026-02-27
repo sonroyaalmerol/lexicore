@@ -23,14 +23,10 @@ func (o *IRedAdminOperator) Sync(
 	}
 
 	existingUsers := make(map[string]struct{})
-	toDelete := make(map[string]struct{})
 	var mu sync.Mutex
 
 	for _, mail := range currentUsers {
 		existingUsers[mail] = struct{}{}
-		if o.deleteOnDelete {
-			toDelete[mail] = struct{}{}
-		}
 	}
 
 	worker := o.newSyncWorker(ctx)
@@ -40,38 +36,8 @@ func (o *IRedAdminOperator) Sync(
 			continue
 		}
 
-		if id.Disabled {
-			if o.deleteOnDisable {
-				mu.Lock()
-				toDelete[id.Email] = struct{}{}
-				mu.Unlock()
-			}
-			continue
-		}
-
-		if o.deleteOnDelete {
-			mu.Lock()
-			delete(toDelete, id.Email)
-			mu.Unlock()
-		}
-
 		if !worker.submit(func() {
 			o.syncUser(ctx, uid, id, existingUsers, &mu, state.DryRun, state.Result)
-		}) {
-			break
-		}
-	}
-
-	mu.Lock()
-	deleteList := make([]string, 0, len(toDelete))
-	for email := range toDelete {
-		deleteList = append(deleteList, email)
-	}
-	mu.Unlock()
-
-	for _, email := range deleteList {
-		if !worker.submit(func() {
-			o.handleDelete(ctx, email, email, state.DryRun, state.Result)
 		}) {
 			break
 		}
@@ -157,19 +123,20 @@ func (o *IRedAdminOperator) syncUser(
 	mu.Unlock()
 
 	if !exists {
-		o.handleCreate(ctx, uid, id, dryRun, result)
-	} else {
-		userData, err := o.getUser(ctx, id.Email)
-		if err != nil {
-			o.LogError(fmt.Errorf("check user %s (uid: %s): %w", id.Email, uid, err))
-			result.Record(operator.ActionSkip, uid, id.Username)
-			return
-		}
+		result.RecordError(operator.ActionSkip, uid, id.Username, fmt.Errorf("user not found"))
+		return
+	}
 
-		if err := o.updateUser(ctx, id, result, newUserData, userData, dryRun); err != nil {
-			o.LogError(fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
-			result.RecordError(operator.ActionUpdate, uid, id.Username, err)
-		}
+	userData, err := o.getUser(ctx, id.Email)
+	if err != nil {
+		o.LogError(fmt.Errorf("check user %s (uid: %s): %w", id.Email, uid, err))
+		result.Record(operator.ActionSkip, uid, id.Username)
+		return
+	}
+
+	if err := o.updateUser(ctx, id, result, newUserData, userData, dryRun); err != nil {
+		o.LogError(fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
+		result.RecordError(operator.ActionUpdate, uid, id.Username, err)
 	}
 }
 
@@ -180,18 +147,6 @@ func (o *IRedAdminOperator) partialSyncUser(
 	dryRun bool,
 	result *operator.SyncResult,
 ) {
-	if id.Deleted {
-		o.handleDelete(ctx, id.Email, id.Username, dryRun, result)
-		return
-	}
-
-	if id.Email == "" || (id.Disabled && o.deleteOnDisable) {
-		if id.Email != "" {
-			o.handleDelete(ctx, id.Email, id.Username, dryRun, result)
-		}
-		return
-	}
-
 	if id.Email == "" {
 		o.LogWarn("Skipping identity %s: no email address", uid)
 		return
@@ -203,49 +158,12 @@ func (o *IRedAdminOperator) partialSyncUser(
 
 	userData, err := o.getUser(ctx, id.Email)
 	if err != nil {
-		o.handleCreate(ctx, uid, id, dryRun, result)
-	} else {
-		if err := o.updateUser(ctx, id, result, newUserData, userData, dryRun); err != nil {
-			o.LogError(fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
-			result.RecordError(operator.ActionUpdate, uid, id.Username, err)
-		}
+		result.RecordError(operator.ActionSkip, uid, id.Username, err)
+		return
 	}
-}
 
-func (o *IRedAdminOperator) handleCreate(
-	ctx context.Context,
-	uid string,
-	id source.Identity,
-	dryRun bool,
-	result *operator.SyncResult,
-) {
-	if dryRun {
-		o.LogInfo("[DRY RUN] Would create user %s (uid: %s)", id.Email, uid)
-	} else {
-		if err := o.createUser(ctx, id); err != nil {
-			o.LogError(fmt.Errorf("create user %s (uid: %s): %w", id.Email, uid, err))
-			result.RecordError(operator.ActionCreate, uid, id.Username, err)
-			return
-		}
+	if err := o.updateUser(ctx, id, result, newUserData, userData, dryRun); err != nil {
+		o.LogError(fmt.Errorf("update user %s (uid: %s): %w", id.Email, uid, err))
+		result.RecordError(operator.ActionUpdate, uid, id.Username, err)
 	}
-	result.Record(operator.ActionCreate, uid, id.Username)
-}
-
-func (o *IRedAdminOperator) handleDelete(
-	ctx context.Context,
-	email string,
-	username string,
-	dryRun bool,
-	result *operator.SyncResult,
-) {
-	if dryRun {
-		o.LogInfo("[DRY RUN] Would delete user %s", email)
-	} else {
-		if err := o.deleteUser(ctx, email, o.keepMailboxDays); err != nil {
-			o.LogError(fmt.Errorf("delete user %s: %w", email, err))
-			result.RecordError(operator.ActionDelete, email, username, err)
-			return
-		}
-	}
-	result.Record(operator.ActionDelete, email, username)
 }

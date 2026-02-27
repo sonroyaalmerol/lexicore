@@ -44,12 +44,9 @@ type UserData struct {
 
 type IRedAdminOperator struct {
 	*operator.BaseOperator
-	Client          *http.Client
-	baseURL         string
-	domain          string
-	deleteOnDisable bool
-	deleteOnDelete  bool
-	keepMailboxDays int
+	Client  *http.Client
+	baseURL string
+	domain  string
 }
 
 func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
@@ -63,27 +60,6 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]ma
 	o.domain, _ = o.GetStringConfig("domain")
 
 	jar, _ := cookiejar.New(nil)
-
-	o.deleteOnDisable = false
-	if rl, ok := o.GetConfig("deleteOnDisable"); ok {
-		if isDelete, ok := rl.Value().(bool); ok && isDelete {
-			o.deleteOnDisable = isDelete
-		}
-	}
-
-	o.deleteOnDelete = false
-	if rl, ok := o.GetConfig("deleteOnDelete"); ok {
-		if isDelete, ok := rl.Value().(bool); ok && isDelete {
-			o.deleteOnDelete = isDelete
-		}
-	}
-
-	o.keepMailboxDays = 0
-	if rl, ok := o.GetConfig("keepMailboxDays"); ok {
-		if rlFloat, ok := rl.Value().(int); ok && rlFloat > 0 {
-			o.keepMailboxDays = rlFloat
-		}
-	}
 
 	if o.Client == nil {
 		o.Client = &http.Client{

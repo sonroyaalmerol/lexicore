@@ -12,12 +12,10 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/utils"
-	"github.com/sethvargo/go-password/password"
 )
 
 type attributeConfig struct {
 	apiParam      string
-	onCreate      bool
 	onUpdate      bool
 	userDataField func(UserData) []string
 	isSlice       bool
@@ -26,63 +24,54 @@ type attributeConfig struct {
 var attributeConfigs = map[string]attributeConfig{
 	AttributeLanguage: {
 		apiParam:      "language",
-		onCreate:      true,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.PreferredLanguage },
 		isSlice:       false,
 	},
 	AttributeQuota: {
 		apiParam:      "quota",
-		onCreate:      true,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.MailQuota },
 		isSlice:       false,
 	},
 	AttributeGivenName: {
 		apiParam:      "givenName",
-		onCreate:      false,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.GivenName },
 		isSlice:       false,
 	},
 	AttributeSN: {
 		apiParam:      "sn",
-		onCreate:      false,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.SN },
 		isSlice:       false,
 	},
 	AttributeStatus: {
 		apiParam:      "accountStatus",
-		onCreate:      false,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.AccountStatus },
 		isSlice:       false,
 	},
 	AttributeEnabledServices: {
 		apiParam:      "services",
-		onCreate:      false,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.EnabledService },
 		isSlice:       true,
 	},
 	AttributeForwardingAddresses: {
 		apiParam:      "forwarding",
-		onCreate:      false,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.MailForwardingAddress },
 		isSlice:       true,
 	},
 	AttributeAliases: {
 		apiParam:      "aliases",
-		onCreate:      false,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.MailingAliases },
 		isSlice:       true,
 	},
 	AttributeCN: {
 		apiParam:      "name",
-		onCreate:      false,
 		onUpdate:      true,
 		userDataField: func(u UserData) []string { return u.CN },
 		isSlice:       false,
@@ -102,67 +91,6 @@ func formatAttrValue(attrVal any) string {
 	default:
 		return fmt.Sprintf("%v", attrVal)
 	}
-}
-
-func (o *IRedAdminOperator) createUser(
-	ctx context.Context,
-	id source.Identity,
-) error {
-	pwd, err := password.Generate(64, 10, 10, false, true)
-	if err != nil {
-		return err
-	}
-
-	createParams := url.Values{}
-	createParams.Set("name", id.DisplayName)
-	createParams.Set("password", pwd)
-
-	updateParams := url.Values{}
-	var mailingLists []string
-
-	for attrKey, attrVal := range id.Attributes {
-		if attrKey == AttributeMailingLists {
-			if mls, ok := attrVal.([]string); ok {
-				mailingLists = mls
-			} else {
-				o.LogError(fmt.Errorf("mailingLists attribute is not []string for user %s", id.Email))
-			}
-			continue
-		}
-
-		config, exists := attributeConfigs[attrKey]
-		if !exists {
-			continue
-		}
-
-		vStr := formatAttrValue(attrVal)
-		if config.onCreate {
-			createParams.Set(config.apiParam, vStr)
-		}
-		if config.onUpdate {
-			updateParams.Set(config.apiParam, vStr)
-		}
-	}
-
-	path := fmt.Sprintf("%s/api/user/%s", o.baseURL, url.PathEscape(id.Email))
-
-	if err := o.doRequest(ctx, "POST", path, createParams); err != nil {
-		return err
-	}
-
-	if len(updateParams) > 0 {
-		if err := o.doRequest(ctx, "PUT", path, updateParams); err != nil {
-			return err
-		}
-	}
-
-	for _, ml := range mailingLists {
-		if err := o.subscribeToMailingList(ctx, ml, []string{id.Email}); err != nil {
-			o.LogError(fmt.Errorf("failed to subscribe user %s to list %s: %v", id.Email, ml, err))
-		}
-	}
-
-	return nil
 }
 
 func (o *IRedAdminOperator) updateUser(
@@ -204,8 +132,8 @@ func (o *IRedAdminOperator) updateUser(
 			data.Set(config.apiParam, strings.Join(newVal, ","))
 			changes = append(changes, operator.AttrChange(
 				attrKey,
-				strings.Join(currentVal, ","),
-				strings.Join(newVal, ","),
+				utils.SliceToSortedString(currentVal, ","),
+				utils.SliceToSortedString(newVal, ","),
 			))
 		}
 	}
@@ -250,11 +178,6 @@ func (o *IRedAdminOperator) updateUser(
 
 	result.Record(operator.ActionUpdate, newUser.UID[0], newUser.Mail[0], changes...)
 	return nil
-}
-
-func (o *IRedAdminOperator) deleteUser(ctx context.Context, email string, days int) error {
-	path := fmt.Sprintf("%s/api/user/%s/keep_mailbox_days/%d", o.baseURL, url.PathEscape(email), days)
-	return o.doRequest(ctx, "DELETE", path, nil)
 }
 
 func (o *IRedAdminOperator) getUsers(ctx context.Context) ([]string, error) {

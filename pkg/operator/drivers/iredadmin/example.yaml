@@ -7,9 +7,6 @@ spec:
   operator: iredadmin
   dryRun: true
   config:
-    deleteOnDelete: false
-    deleteOnDisable: false
-    keepMailboxDays: 30
     domain: test.com
     attributePrefix: "iredadmin:"
     url: "https://test.test.com/iredadmin"
