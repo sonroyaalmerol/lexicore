@@ -42,11 +42,9 @@ func (o *DovecotOperator) parseCurrentACLs(currentACL *MailboxACLResponse) (map[
 	anyoneACLs := make([]string, 0, 11)
 
 	for _, acl := range currentACL.ACLs {
-		if !o.removeAnyoneACL {
-			if acl.ID == "anyone" {
-				anyoneACLs = utils.ConcatUnique(anyoneACLs, acl.Rights)
-				continue
-			}
+		if acl.ID == "anyone" {
+			anyoneACLs = utils.ConcatUnique(anyoneACLs, acl.Rights)
+			continue
 		}
 		if email, trimmed := strings.CutPrefix(acl.ID, "user="); trimmed {
 			emailParts := strings.SplitN(email, "@", 2)
@@ -68,10 +66,15 @@ func (o *DovecotOperator) calculateACLsToSet(
 	anyoneACLs []string,
 ) {
 	for username, desiredRights := range desiredUserACLs {
-		effectiveRights := anyoneACLs
+		effectiveRights := make([]string, 0, 11)
+
+		if !o.removeAnyoneACL {
+			effectiveRights = anyoneACLs
+		}
+
 		currentRights, ok := currentUserACLs[username]
 		if ok {
-			effectiveRights = utils.ConcatUnique(currentRights, anyoneACLs)
+			effectiveRights = utils.ConcatUnique(effectiveRights, currentRights)
 		}
 
 		if !utils.SlicesAreEqual(effectiveRights, desiredRights) {
