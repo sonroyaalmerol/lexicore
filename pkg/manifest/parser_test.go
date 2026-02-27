@@ -1,3 +1,4 @@
+// parser_test.go
 package manifest
 
 import (
@@ -228,39 +229,134 @@ spec:
 	}
 }
 
-func TestParser_EnvironmentVariableExpansion(t *testing.T) {
-	os.Setenv("TEST_DOMAIN", "test.example.com")
-	os.Setenv("TEST_QUOTA", "5000")
-	defer os.Unsetenv("TEST_DOMAIN")
-	defer os.Unsetenv("TEST_QUOTA")
+func TestParser_SecretValue_ValueFromEnv(t *testing.T) {
+	t.Setenv("TEST_BIND_PASSWORD", "supersecret")
 
 	manifest := `
 apiVersion: lexicore.io/v1
-kind: SyncTarget
+kind: IdentitySource
 metadata:
-  name: test
+  name: test-ldap
 spec:
-  sourceRef: source
-  operator: mock
-  transformers:
-    - name: test
-      type: constant
-      config:
-        mappings:
-          domain: ${TEST_DOMAIN}
-          quota: ${TEST_QUOTA}
+  type: ldap
+  config:
+    url: ldap://localhost
+    bindDN: cn=admin,dc=example,dc=com
+    bindPassword:
+      valueFrom:
+        env: TEST_BIND_PASSWORD
+    baseDN: dc=example,dc=com
 `
 
 	parser := NewParser()
 	parsed, err := parser.Parse([]byte(manifest))
 	require.NoError(t, err)
 
-	target, ok := parsed.(*SyncTarget)
+	source, ok := parsed.(*IdentitySource)
 	require.True(t, ok)
+	assert.Equal(t, "supersecret", source.Spec.Config["bindPassword"].String())
+}
 
-	mappings := target.Spec.Transformers[0].Config["mappings"].(map[string]any)
-	assert.Equal(t, "test.example.com", mappings["domain"])
-	assert.Equal(t, 5000, int(mappings["quota"].(uint64)))
+func TestParser_SecretValue_ValueFromFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	secretFile := filepath.Join(tmpDir, "password")
+	require.NoError(t, os.WriteFile(secretFile, []byte("filepassword"), 0600))
+
+	manifest := `
+apiVersion: lexicore.io/v1
+kind: IdentitySource
+metadata:
+  name: test-ldap
+spec:
+  type: ldap
+  config:
+    url: ldap://localhost
+    bindDN: cn=admin,dc=example,dc=com
+    bindPassword:
+      valueFrom:
+        file: ` + secretFile + `
+    baseDN: dc=example,dc=com
+`
+
+	parser := NewParser()
+	parsed, err := parser.Parse([]byte(manifest))
+	require.NoError(t, err)
+
+	source, ok := parsed.(*IdentitySource)
+	require.True(t, ok)
+	assert.Equal(t, "filepassword", source.Spec.Config["bindPassword"].String())
+}
+
+func TestParser_SecretValue_MissingEnvVar(t *testing.T) {
+	os.Unsetenv("DOES_NOT_EXIST")
+
+	manifest := `
+apiVersion: lexicore.io/v1
+kind: IdentitySource
+metadata:
+  name: test-ldap
+spec:
+  type: ldap
+  config:
+    url: ldap://localhost
+    bindDN: cn=admin,dc=example,dc=com
+    bindPassword:
+      valueFrom:
+        env: DOES_NOT_EXIST
+    baseDN: dc=example,dc=com
+`
+
+	parser := NewParser()
+	_, err := parser.Parse([]byte(manifest))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DOES_NOT_EXIST")
+}
+
+func TestParser_SecretValue_MissingFile(t *testing.T) {
+	manifest := `
+apiVersion: lexicore.io/v1
+kind: IdentitySource
+metadata:
+  name: test-ldap
+spec:
+  type: ldap
+  config:
+    url: ldap://localhost
+    bindDN: cn=admin,dc=example,dc=com
+    bindPassword:
+      valueFrom:
+        file: /does/not/exist/password
+    baseDN: dc=example,dc=com
+`
+
+	parser := NewParser()
+	_, err := parser.Parse([]byte(manifest))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/does/not/exist/password")
+}
+
+func TestParser_SecretValue_PlainValueStillWorks(t *testing.T) {
+	manifest := `
+apiVersion: lexicore.io/v1
+kind: IdentitySource
+metadata:
+  name: test-ldap
+spec:
+  type: ldap
+  config:
+    url: ldap://localhost
+    bindDN: cn=admin,dc=example,dc=com
+    bindPassword: plaintextpassword
+    baseDN: dc=example,dc=com
+`
+
+	parser := NewParser()
+	parsed, err := parser.Parse([]byte(manifest))
+	require.NoError(t, err)
+
+	source, ok := parsed.(*IdentitySource)
+	require.True(t, ok)
+	assert.Equal(t, "plaintextpassword", source.Spec.Config["bindPassword"].String())
 }
 
 func TestParser_ParseFile(t *testing.T) {
@@ -330,7 +426,6 @@ spec:
 	parsed, err := parser.ParseDirectory(tmpDir)
 	require.NoError(t, err)
 
-	// Should only parse .yaml files
 	assert.Len(t, parsed, 2)
 
 	var sources, targets int

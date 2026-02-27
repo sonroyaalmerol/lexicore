@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"sync"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/utils"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -14,7 +15,7 @@ import (
 
 type BaseOperator struct {
 	name    string
-	config  map[string]any
+	config  map[string]manifest.ConfigValue
 	mu      sync.RWMutex
 	logger  *zap.Logger
 	limiter *rate.Limiter
@@ -39,9 +40,9 @@ func (b *BaseOperator) Name() string {
 func (b *BaseOperator) GetConcurrency() int {
 	workers := 10
 	if w, ok := b.GetConfig("concurrency"); ok {
-		if wInt, ok := w.(int); ok && wInt > 0 {
+		if wInt, ok := w.Value().(int); ok && wInt > 0 {
 			workers = wInt
-		} else if wFloat, ok := w.(float64); ok && wFloat > 0 {
+		} else if wFloat, ok := w.Value().(float64); ok && wFloat > 0 {
 			workers = int(wFloat)
 		}
 	}
@@ -52,7 +53,7 @@ func (b *BaseOperator) GetLimiter() *rate.Limiter {
 	b.limiterOnce.Do(func() {
 		rateLimit := 50.0
 		if rl, ok := b.GetConfig("rateLimit"); ok {
-			if rlFloat, ok := rl.(float64); ok && rlFloat > 0 {
+			if rlFloat, ok := rl.Value().(float64); ok && rlFloat > 0 {
 				rateLimit = rlFloat
 			}
 		}
@@ -63,7 +64,7 @@ func (b *BaseOperator) GetLimiter() *rate.Limiter {
 	return b.limiter
 }
 
-func (b *BaseOperator) GetConfig(key string) (any, bool) {
+func (b *BaseOperator) GetConfig(key string) (manifest.ConfigValue, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	val, ok := b.config[key]
@@ -71,21 +72,17 @@ func (b *BaseOperator) GetConfig(key string) (any, bool) {
 }
 
 func (b *BaseOperator) GetStringConfig(key string) (string, error) {
-	val, ok := b.GetConfig(key)
+	config, ok := b.GetConfig(key)
 	if !ok {
-		return "", fmt.Errorf("config key %s not found", key)
+		return "", fmt.Errorf("config not found: %s", key)
 	}
-	str, ok := val.(string)
-	if !ok {
-		return "", fmt.Errorf("config key %s is not a string", key)
-	}
-	return str, nil
+	return config.String(), nil
 }
 
 func (b *BaseOperator) GetTemplatedStringConfig(key string, attr map[string]any) (string, error) {
-	str, err := b.GetStringConfig(key)
-	if err != nil {
-		return "", err
+	str, ok := b.GetConfig(key)
+	if !ok {
+		return "", fmt.Errorf("config not found: %s", key)
 	}
 
 	tmpl := template.New(key).
@@ -94,7 +91,7 @@ func (b *BaseOperator) GetTemplatedStringConfig(key string, attr map[string]any)
 
 	var buf bytes.Buffer
 
-	parser, err := tmpl.Parse(str)
+	parser, err := tmpl.Parse(str.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)
 	}
@@ -107,7 +104,7 @@ func (b *BaseOperator) GetTemplatedStringConfig(key string, attr map[string]any)
 	return buf.String(), nil
 }
 
-func (b *BaseOperator) SetConfig(config map[string]any) {
+func (b *BaseOperator) SetConfig(config map[string]manifest.ConfigValue) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.config = config
@@ -141,7 +138,7 @@ func (b *BaseOperator) ShouldSkipUnchangedSync() bool {
 		return false
 	}
 
-	if boolVal, ok := skipUnchanged.(bool); ok {
+	if boolVal, ok := skipUnchanged.Value().(bool); ok {
 		return boolVal
 	}
 

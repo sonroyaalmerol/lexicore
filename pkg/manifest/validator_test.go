@@ -1,3 +1,4 @@
+// validator_test.go
 package manifest
 
 import (
@@ -6,6 +7,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func cv(v any) ConfigValue {
+	c := ConfigValue{}
+	c.raw = v
+	return c
+}
 
 func TestValidator_ValidateIdentitySource(t *testing.T) {
 	validator := NewValidator()
@@ -27,11 +34,11 @@ func TestValidator_ValidateIdentitySource(t *testing.T) {
 				Spec: IdentitySourceSpec{
 					Type:       "ldap",
 					SyncPeriod: "5m",
-					Config: map[string]any{
-						"url":          "ldap://localhost",
-						"bindDN":       "cn=admin",
-						"bindPassword": "pass",
-						"baseDN":       "dc=example",
+					Config: map[string]ConfigValue{
+						"url":          cv("ldap://localhost"),
+						"bindDN":       cv("cn=admin"),
+						"bindPassword": cv("pass"),
+						"baseDN":       cv("dc=example"),
 					},
 				},
 			},
@@ -79,6 +86,24 @@ func TestValidator_ValidateIdentitySource(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "invalid syncPeriod",
+		},
+		{
+			name: "ldap missing required config fields",
+			source: &IdentitySource{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "IdentitySource",
+				},
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: IdentitySourceSpec{
+					Type: "ldap",
+					Config: map[string]ConfigValue{
+						"url": cv("ldap://localhost"),
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "LDAP config missing required field",
 		},
 	}
 
@@ -150,6 +175,44 @@ func TestValidator_ValidateSyncTarget(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "operator is required",
+		},
+		{
+			name: "invalid transformer missing name",
+			target: &SyncTarget{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "SyncTarget",
+				},
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: SyncTargetSpec{
+					SourceRef: "test-source",
+					Operator:  "dovecot",
+					Transformers: []TransformerConfig{
+						{Type: "selector"},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "transformer name is required",
+		},
+		{
+			name: "invalid transformer missing type",
+			target: &SyncTarget{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "lexicore.io/v1",
+					Kind:       "SyncTarget",
+				},
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: SyncTargetSpec{
+					SourceRef: "test-source",
+					Operator:  "dovecot",
+					Transformers: []TransformerConfig{
+						{Name: "my-transformer"},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "transformer type is required",
 		},
 	}
 

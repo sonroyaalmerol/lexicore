@@ -9,63 +9,63 @@ import (
 )
 
 type Config struct {
-	Server                ServerConfig  `yaml:"server" json:"server"`
-	Logging               LoggingConfig `yaml:"logging" json:"logging"`
-	Metrics               MetricsConfig `yaml:"metrics" json:"metrics"`
-	Etcd                  EtcdConfig    `yaml:"etcd" json:"etcd"`
-	DefaultSyncPeriod     time.Duration `yaml:"defaultSyncPeriod" json:"defaultSyncPeriod" envconfig:"DEFAULT_SYNC_PERIOD"`
-	Workers               WorkersConfig `yaml:"workers" json:"workers"`
+	Server                ServerConfig  `yaml:"server"`
+	Logging               LoggingConfig `yaml:"logging"`
+	Metrics               MetricsConfig `yaml:"metrics"`
+	Store                 StoreConfig   `yaml:"store"`
+	DefaultSyncPeriod     time.Duration `yaml:"defaultSyncPeriod" envconfig:"DEFAULT_SYNC_PERIOD"`
+	Workers               WorkersConfig `yaml:"workers"`
 	WebhookDebounceWindow time.Duration `yaml:"webhookDebounceWindow"`
 }
 
+type StoreConfig struct {
+	Mode string     `yaml:"mode" envconfig:"STORE_MODE"`
+	File FileConfig `yaml:"file"`
+	Git  GitConfig  `yaml:"git"`
+}
+
+type FileConfig struct {
+	Dir string `yaml:"dir" envconfig:"STORE_FILE_DIR"`
+}
+
+type GitConfig struct {
+	RepoURL      string        `yaml:"repoURL" envconfig:"STORE_GIT_REPO_URL"`
+	Branch       string        `yaml:"branch" envconfig:"STORE_GIT_BRANCH"`
+	LocalDir     string        `yaml:"localDir" envconfig:"STORE_GIT_LOCAL_DIR"`
+	Username     string        `yaml:"username" envconfig:"STORE_GIT_USERNAME"`
+	Password     string        `yaml:"password" envconfig:"STORE_GIT_PASSWORD"`
+	PollInterval time.Duration `yaml:"pollInterval" envconfig:"STORE_GIT_POLL_INTERVAL"`
+}
+
 type ServerConfig struct {
-	Address     string `yaml:"address" json:"address" envconfig:"ADDRESS"`
-	HealthCheck bool   `yaml:"healthCheck" json:"healthCheck" envconfig:"HEALTH_CHECK"`
-	Metrics     bool   `yaml:"metrics" json:"metrics" envconfig:"METRICS"`
-	PluginsDir  string `yaml:"pluginsDir" json:"pluginsDir" envconfig:"PLUGINS_DIR"`
+	Address    string `yaml:"address" envconfig:"ADDRESS"`
+	PluginsDir string `yaml:"pluginsDir" envconfig:"PLUGINS_DIR"`
+	AuditsDir  string `yaml:"auditsDir" envconfig:"AUDITS_DIR"`
 }
 
 type LoggingConfig struct {
-	Level  string `yaml:"level" json:"level" envconfig:"LEVEL"`
-	Format string `yaml:"format" json:"format" envconfig:"FORMAT"`
-	Output string `yaml:"output" json:"output" envconfig:"OUTPUT"`
+	Level  string `yaml:"level" envconfig:"LEVEL"`
+	Format string `yaml:"format" envconfig:"FORMAT"`
+	Output string `yaml:"output" envconfig:"OUTPUT"`
 }
 
 type MetricsConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled" envconfig:"ENABLED"`
-	Port    int    `yaml:"port" json:"port" envconfig:"PORT"`
-	Path    string `yaml:"path" json:"path" envconfig:"PATH"`
-}
-
-type EtcdConfig struct {
-	Endpoints []string `yaml:"endpoints" json:"endpoints" envconfig:"ENDPOINTS"`
-
-	DataDir   string `yaml:"dataDir" json:"dataDir" envconfig:"DATA_DIR"`
-	AutoJoin  bool   `yaml:"autoJoin" json:"autoJoin" envconfig:"AUTO_JOIN"`
-	Discovery string `yaml:"discovery" json:"discovery" envconfig:"DISCOVERY"`
-
-	// Static/manual configuration (used when AutoJoin=false or Discovery="static")
-	Name           string `yaml:"name" json:"name" envconfig:"NAME"`
-	PeerAddr       string `yaml:"peerAddr" json:"peerAddr" envconfig:"PEER_ADDR"`
-	ClientAddr     string `yaml:"clientAddr" json:"clientAddr" envconfig:"CLIENT_ADDR"`
-	InitialCluster string `yaml:"initialCluster" json:"initialCluster" envconfig:"INITIAL_CLUSTER"`
-
-	BindAddr  string   `yaml:"bindAddr" json:"bindAddr" envconfig:"BIND_ADDR"`
-	SeedAddrs []string `yaml:"seedAddrs" json:"seedAddrs" envconfig:"SEED_ADDRS"`
+	Enabled bool   `yaml:"enabled" envconfig:"ENABLED"`
+	Port    int    `yaml:"port" envconfig:"PORT"`
+	Path    string `yaml:"path" envconfig:"PATH"`
 }
 
 type WorkersConfig struct {
-	ReconcileWorkers int `yaml:"reconcileWorkers" json:"reconcileWorkers" envconfig:"RECONCILE_WORKERS"`
-	QueueSize        int `yaml:"queueSize" json:"queueSize" envconfig:"QUEUE_SIZE"`
+	ReconcileWorkers int `yaml:"reconcileWorkers" envconfig:"RECONCILE_WORKERS"`
+	QueueSize        int `yaml:"queueSize" envconfig:"QUEUE_SIZE"`
 }
 
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Address:     ":8080",
-			HealthCheck: true,
-			Metrics:     true,
-			PluginsDir:  "/var/lib/lexicore/plugins",
+			Address:    ":8080",
+			PluginsDir: "/var/lib/lexicore/plugins",
+			AuditsDir:  "/var/lib/lexicore/audits",
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -77,17 +77,16 @@ func DefaultConfig() *Config {
 			Port:    9090,
 			Path:    "/metrics",
 		},
-		Etcd: EtcdConfig{
-			Endpoints:      []string{}, // Empty means use embedded
-			DataDir:        "/var/lib/lexicore/etcd",
-			AutoJoin:       false,
-			Discovery:      "static",
-			Name:           "node-1",
-			PeerAddr:       "http://localhost:2380",
-			ClientAddr:     "http://localhost:2379",
-			InitialCluster: "node-1=http://localhost:2380",
-			BindAddr:       "0.0.0.0",
-			SeedAddrs:      []string{},
+		Store: StoreConfig{
+			Mode: "file",
+			File: FileConfig{
+				Dir: "/etc/lexicore/manifests",
+			},
+			Git: GitConfig{
+				Branch:       "main",
+				LocalDir:     "/var/lib/lexicore/git",
+				PollInterval: 1 * time.Minute,
+			},
 		},
 		DefaultSyncPeriod: 5 * time.Minute,
 		Workers: WorkersConfig{

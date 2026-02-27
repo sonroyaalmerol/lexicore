@@ -65,7 +65,7 @@ type Manager struct {
 	activeOperators    *xsync.Map[string, *ActiveOperator]
 	activeSources      *xsync.Map[string, *ActiveSource]
 	reconcilingTargets *xsync.Map[string, bool]
-	db                 *store.EtcdStore
+	db                 store.Store
 
 	pluginManager *PluginManager
 
@@ -86,7 +86,7 @@ type Manager struct {
 func NewManager(
 	ctx context.Context,
 	cfg *config.Config,
-	db *store.EtcdStore,
+	db store.Store,
 	logger *zap.Logger,
 ) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
@@ -142,17 +142,71 @@ func NewManager(
 		}
 	})
 
-	m.loadDatabase()
+	m.reloadFromStore()
 
-	go m.runWatchLoop("identitysources")
-	go m.runWatchLoop("synctargets")
-	go m.runLeaderElection(cfg.Etcd.Name)
+	if err := db.Watch(ctx, func() {
+		m.logger.Info("Store changed, reloading manifests")
+		m.reloadFromStore()
+	}); err != nil {
+		logger.Error("Failed to start store watcher", zap.Error(err))
+	}
 
 	m.wg.Go(func() {
 		m.webhookProcessor(ctx)
 	})
 
 	return m
+}
+
+func (m *Manager) reloadFromStore() {
+	ctx, cancel := context.WithTimeout(m.shutdownCtx, 30*time.Second)
+	defer cancel()
+
+	sources, err := m.db.GetIdentitySources(ctx)
+	if err != nil {
+		m.logger.Error("Failed to load identity sources from store", zap.Error(err))
+	} else {
+		seen := make(map[string]bool)
+		for _, src := range sources {
+			seen[src.Name] = true
+			if _, ok := m.activeSources.Load(src.Name); !ok {
+				if err := m.AddIdentitySource(src); err != nil {
+					m.logger.Error("Failed to add identity source",
+						zap.String("name", src.Name),
+						zap.Error(err))
+				}
+			}
+		}
+		m.activeSources.Range(func(name string, _ *ActiveSource) bool {
+			if !seen[name] {
+				m.RemoveIdentitySource(name)
+			}
+			return true
+		})
+	}
+
+	targets, err := m.db.GetSyncTargets(ctx)
+	if err != nil {
+		m.logger.Error("Failed to load sync targets from store", zap.Error(err))
+	} else {
+		seen := make(map[string]bool)
+		for _, t := range targets {
+			seen[t.Name] = true
+			if _, ok := m.activeOperators.Load(t.Name); !ok {
+				if err := m.AddSyncTarget(t); err != nil {
+					m.logger.Error("Failed to add sync target",
+						zap.String("name", t.Name),
+						zap.Error(err))
+				}
+			}
+		}
+		m.activeOperators.Range(func(name string, _ *ActiveOperator) bool {
+			if !seen[name] {
+				m.RemoveSyncTarget(name)
+			}
+			return true
+		})
+	}
 }
 
 func (m *Manager) GetIdentitySources() []manifest.IdentitySource {
@@ -232,6 +286,10 @@ func (m *Manager) AddIdentitySource(src *manifest.IdentitySource) error {
 	}
 
 	m.activeSources.Store(src.Name, activeSource)
+	m.logger.Info(
+		"Adding new active identity source instance",
+		zap.String("src", src.Name),
+	)
 	return nil
 }
 
@@ -287,6 +345,10 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 	}
 
 	m.activeOperators.Store(target.Name, activeTarget)
+	m.logger.Info(
+		"Adding new active sync target instance",
+		zap.String("target", target.Name),
+	)
 
 	select {
 	case m.queue <- reconcileTask{targetName: target.Name, immediate: true}:

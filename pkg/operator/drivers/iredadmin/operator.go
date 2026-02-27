@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 )
 
@@ -51,7 +52,7 @@ type IRedAdminOperator struct {
 	keepMailboxDays int
 }
 
-func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]any) error {
+func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
 	o.SetConfig(config)
 	if err := o.Validate(ctx); err != nil {
 		return err
@@ -65,21 +66,21 @@ func (o *IRedAdminOperator) Initialize(ctx context.Context, config map[string]an
 
 	o.deleteOnDisable = false
 	if rl, ok := o.GetConfig("deleteOnDisable"); ok {
-		if isDelete, ok := rl.(bool); ok && isDelete {
+		if isDelete, ok := rl.Value().(bool); ok && isDelete {
 			o.deleteOnDisable = isDelete
 		}
 	}
 
 	o.deleteOnDelete = false
 	if rl, ok := o.GetConfig("deleteOnDelete"); ok {
-		if isDelete, ok := rl.(bool); ok && isDelete {
+		if isDelete, ok := rl.Value().(bool); ok && isDelete {
 			o.deleteOnDelete = isDelete
 		}
 	}
 
 	o.keepMailboxDays = 0
 	if rl, ok := o.GetConfig("keepMailboxDays"); ok {
-		if rlFloat, ok := rl.(int); ok && rlFloat > 0 {
+		if rlFloat, ok := rl.Value().(int); ok && rlFloat > 0 {
 			o.keepMailboxDays = rlFloat
 		}
 	}

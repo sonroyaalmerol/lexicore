@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	authentik "goauthentik.io/api/v3"
 )
@@ -24,7 +25,7 @@ type AuthentikSource struct {
 	client *authentik.APIClient
 }
 
-func (o *AuthentikSource) Initialize(ctx context.Context, config map[string]any) error {
+func (o *AuthentikSource) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
 	o.SetConfig(config)
 	return o.Validate(ctx)
 }
@@ -43,7 +44,7 @@ func (o *AuthentikSource) Validate(ctx context.Context) error {
 	pageSize := int32(100)
 	pageSizeRaw, ok := o.GetConfig("pageSize")
 	if ok {
-		switch v := pageSizeRaw.(type) {
+		switch v := pageSizeRaw.Value().(type) {
 		case int:
 			pageSize = int32(v)
 		case int32:

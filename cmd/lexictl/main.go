@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +9,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -19,17 +17,20 @@ var (
 )
 
 func main() {
-	var rootCmd = &cobra.Command{
+	rootCmd := &cobra.Command{
 		Use:   "lexictl",
 		Short: "lexictl controls the Lexicore identity orchestrator",
 		Long:  `A command line tool to manage Lexicore IdentitySources and SyncTargets.`,
 	}
 
-	rootCmd.PersistentFlags().StringVarP(&serverAddr, "server", "s", "http://localhost:8080", "The address and port of the Lexicore API server")
+	rootCmd.PersistentFlags().StringVarP(
+		&serverAddr,
+		"server", "s",
+		"http://localhost:8080",
+		"The address and port of the Lexicore API server",
+	)
 
-	rootCmd.AddCommand(newApplyCommand())
 	rootCmd.AddCommand(newGetCommand())
-	rootCmd.AddCommand(newDeleteCommand())
 	rootCmd.AddCommand(newReconcileCommand())
 	rootCmd.AddCommand(newInspectCommand())
 
@@ -38,74 +39,15 @@ func main() {
 	}
 }
 
-func newApplyCommand() *cobra.Command {
-	var file string
-	cmd := &cobra.Command{
-		Use:   "apply",
-		Short: "Apply a configuration to a resource by file name",
-		Run: func(cmd *cobra.Command, args []string) {
-			if file == "" {
-				fmt.Println("Error: must specify -f <file>")
-				return
-			}
-
-			data, err := os.ReadFile(file)
-			if err != nil {
-				fmt.Printf("Error reading file: %v\n", err)
-				return
-			}
-
-			var base struct {
-				Kind     string `yaml:"kind"`
-				Metadata struct {
-					Name string `yaml:"name"`
-				} `yaml:"metadata"`
-			}
-			if err := yaml.Unmarshal(data, &base); err != nil {
-				fmt.Printf("Error parsing YAML: %v\n", err)
-				return
-			}
-
-			endpoint := getEndpoint(base.Kind)
-			if endpoint == "" {
-				fmt.Printf("Error: Unknown kind %q\n", base.Kind)
-				return
-			}
-
-			var raw any
-			yaml.Unmarshal(data, &raw)
-			jsonBody, _ := json.Marshal(raw)
-
-			resp, err := http.Post(serverAddr+apiPrefix+endpoint, "application/json", bytes.NewBuffer(jsonBody))
-			if err != nil {
-				fmt.Printf("Error connecting to server: %v\n", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode >= 300 {
-				body, _ := io.ReadAll(resp.Body)
-				fmt.Printf("Error from server (%d): %s\n", resp.StatusCode, string(body))
-				return
-			}
-
-			fmt.Printf("%s/%s applied\n", base.Kind, base.Metadata.Name)
-		},
-	}
-	cmd.Flags().StringVarP(&file, "file", "f", "", "Configuration file to apply")
-	return cmd
-}
-
 func newGetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get [kind]",
 		Short: "Display one or many resources",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			kind := args[0]
-			endpoint := getEndpoint(kind)
+			endpoint := getEndpoint(args[0])
 			if endpoint == "" {
-				fmt.Printf("Error: Unknown resource kind %q\n", kind)
+				fmt.Printf("Error: Unknown resource kind %q\n", args[0])
 				return
 			}
 
@@ -130,8 +72,10 @@ func newGetCommand() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', 0)
 			fmt.Fprintln(w, "NAME\tKIND\tSTATUS")
 			for _, item := range items {
-				meta := item["metadata"].(map[string]any)
-				name := meta["name"]
+				meta, ok := item["metadata"].(map[string]any)
+				if !ok {
+					continue
+				}
 
 				status := "Active"
 				if s, ok := item["status"].(map[string]any); ok {
@@ -140,41 +84,9 @@ func newGetCommand() *cobra.Command {
 					}
 				}
 
-				fmt.Fprintf(w, "%v\t%v\t%v\n", name, item["kind"], status)
+				fmt.Fprintf(w, "%v\t%v\t%v\n", meta["name"], item["kind"], status)
 			}
 			w.Flush()
-		},
-	}
-}
-
-func newDeleteCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "delete [kind] [name]",
-		Short: "Delete resources by resources and names",
-		Args:  cobra.ExactArgs(2),
-		Run: func(cmd *cobra.Command, args []string) {
-			kind := args[0]
-			name := args[1]
-			endpoint := getEndpoint(kind)
-			if endpoint == "" {
-				fmt.Printf("Error: Unknown kind %q\n", kind)
-				return
-			}
-
-			req, _ := http.NewRequest(http.MethodDelete, serverAddr+apiPrefix+endpoint+"/"+name, nil)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode == http.StatusOK {
-				fmt.Printf("%s %q deleted\n", kind, name)
-			} else {
-				body, _ := io.ReadAll(resp.Body)
-				fmt.Printf("Failed to delete (Status: %d): %s\n", resp.StatusCode, string(body))
-			}
 		},
 	}
 }
@@ -185,12 +97,16 @@ func newReconcileCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reconcile [synctarget-name]",
 		Short: "Manually trigger reconciliation for a SyncTarget or all SyncTargets",
-		Long: `Trigger immediate reconciliation for a specific SyncTarget by name, 
+		Long: `Trigger immediate reconciliation for a specific SyncTarget by name,
 or use --all to reconcile all SyncTargets at once.`,
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			if all {
-				resp, err := http.Post(serverAddr+apiPrefix+"/reconcile", "application/json", nil)
+				resp, err := http.Post(
+					serverAddr+apiPrefix+"/reconcile",
+					"application/json",
+					nil,
+				)
 				if err != nil {
 					fmt.Printf("Error connecting to server: %v\n", err)
 					return
@@ -207,9 +123,12 @@ or use --all to reconcile all SyncTargets at once.`,
 				case http.StatusAccepted:
 					fmt.Printf("✓ Reconciliation queued for %v targets\n", result["count"])
 				case http.StatusPartialContent:
-					fmt.Printf("⚠ Partial success: %v targets queued, %v failed\n",
-						result["queued"], len(result["failed"].([]any)))
-					if failed, ok := result["failed"].([]any); ok && len(failed) > 0 {
+					fmt.Printf(
+						"⚠ Partial success: %v targets queued, %v failed\n",
+						result["queued"],
+						len(result["failed"].([]any)),
+					)
+					if failed, ok := result["failed"].([]any); ok {
 						fmt.Println("Failed targets:")
 						for _, f := range failed {
 							fmt.Printf("  - %v\n", f)
@@ -229,7 +148,10 @@ or use --all to reconcile all SyncTargets at once.`,
 			}
 
 			targetName := args[0]
-			url := fmt.Sprintf("%s%s/synctargets/%s/reconcile", serverAddr, apiPrefix, targetName)
+			url := fmt.Sprintf(
+				"%s%s/synctargets/%s/reconcile",
+				serverAddr, apiPrefix, targetName,
+			)
 
 			resp, err := http.Post(url, "application/json", nil)
 			if err != nil {
@@ -238,8 +160,9 @@ or use --all to reconcile all SyncTargets at once.`,
 			}
 			defer resp.Body.Close()
 
-			var result map[string]any
 			body, _ := io.ReadAll(resp.Body)
+
+			var result map[string]any
 			json.Unmarshal(body, &result)
 
 			switch resp.StatusCode {
@@ -275,7 +198,10 @@ func newInspectCommand() *cobra.Command {
 			}
 
 			sourceName := args[1]
-			url := fmt.Sprintf("%s%s/identitysources/%s/details", serverAddr, apiPrefix, sourceName)
+			url := fmt.Sprintf(
+				"%s%s/identitysources/%s/details",
+				serverAddr, apiPrefix, sourceName,
+			)
 
 			resp, err := http.Get(url)
 			if err != nil {
@@ -298,56 +224,62 @@ func newInspectCommand() *cobra.Command {
 
 			fmt.Printf("\n=== Identity Source: %s ===\n\n", sourceName)
 
-			// Display identities
 			if identitiesData, ok := result["identities"].(map[string]any); ok {
-				count := identitiesData["count"]
-				items := identitiesData["items"].(map[string]any)
+				fmt.Printf("Identities (%v):\n", identitiesData["count"])
 
-				fmt.Printf("Identities (%v):\n", count)
 				w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', 0)
 				fmt.Fprintln(w, "UID\tUSERNAME\tEMAIL\tDISPLAY NAME\tGROUPS")
 
-				for uid, identity := range items {
-					id := identity.(map[string]any)
-					username := getStringField(id, "Username")
-					email := getStringField(id, "Email")
-					displayName := getStringField(id, "DisplayName")
-
-					groups := ""
-					if groupList, ok := id["Groups"].([]any); ok && len(groupList) > 0 {
-						groupStrs := make([]string, len(groupList))
-						for i, g := range groupList {
-							groupStrs[i] = fmt.Sprintf("%v", g)
+				if items, ok := identitiesData["items"].(map[string]any); ok {
+					for uid, identity := range items {
+						id, ok := identity.(map[string]any)
+						if !ok {
+							continue
 						}
-						groups = fmt.Sprintf("%d groups", len(groupStrs))
-					}
 
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", uid, username, email, displayName, groups)
+						groups := ""
+						if groupList, ok := id["Groups"].([]any); ok && len(groupList) > 0 {
+							groups = fmt.Sprintf("%d groups", len(groupList))
+						}
+
+						fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+							uid,
+							getStringField(id, "Username"),
+							getStringField(id, "Email"),
+							getStringField(id, "DisplayName"),
+							groups,
+						)
+					}
 				}
 				w.Flush()
 				fmt.Println()
 			}
 
-			// Display groups
 			if groupsData, ok := result["groups"].(map[string]any); ok {
-				count := groupsData["count"]
-				items := groupsData["items"].(map[string]any)
+				fmt.Printf("Groups (%v):\n", groupsData["count"])
 
-				fmt.Printf("Groups (%v):\n", count)
 				w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', 0)
 				fmt.Fprintln(w, "GID\tNAME\tDESCRIPTION\tMEMBERS")
 
-				for gid, group := range items {
-					grp := group.(map[string]any)
-					name := getStringField(grp, "Name")
-					desc := getStringField(grp, "Description")
+				if items, ok := groupsData["items"].(map[string]any); ok {
+					for gid, group := range items {
+						grp, ok := group.(map[string]any)
+						if !ok {
+							continue
+						}
 
-					memberCount := 0
-					if members, ok := grp["Members"].([]any); ok {
-						memberCount = len(members)
+						memberCount := 0
+						if members, ok := grp["Members"].([]any); ok {
+							memberCount = len(members)
+						}
+
+						fmt.Fprintf(w, "%s\t%s\t%s\t%d members\n",
+							gid,
+							getStringField(grp, "Name"),
+							getStringField(grp, "Description"),
+							memberCount,
+						)
 					}
-
-					fmt.Fprintf(w, "%s\t%s\t%s\t%d members\n", gid, name, desc, memberCount)
 				}
 				w.Flush()
 			}

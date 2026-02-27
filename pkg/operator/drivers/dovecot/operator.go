@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 )
 
@@ -22,7 +23,7 @@ type DovecotOperator struct {
 
 func (o *DovecotOperator) Initialize(
 	ctx context.Context,
-	config map[string]any,
+	config map[string]manifest.ConfigValue,
 ) error {
 	o.SetConfig(config)
 	if err := o.Validate(ctx); err != nil {
@@ -51,7 +52,7 @@ func (o *DovecotOperator) Initialize(
 	anyone, hasAnyone := o.GetConfig("removeAnyoneACL")
 	if hasAnyone {
 		var ok bool
-		o.removeAnyoneACL, ok = anyone.(bool)
+		o.removeAnyoneACL, ok = anyone.Value().(bool)
 		if !ok {
 			o.removeAnyoneACL = false
 		}

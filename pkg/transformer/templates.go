@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/template"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/utils"
 )
@@ -15,8 +16,8 @@ type TemplateTransformer struct {
 	templates map[string]*template.Template
 }
 
-func NewTemplateTransformer(config map[string]any) (*TemplateTransformer, error) {
-	templates, ok := config["templates"].(map[string]any)
+func NewTemplateTransformer(config map[string]manifest.ConfigValue) (*TemplateTransformer, error) {
+	templates, ok := config["templates"].Value().(map[string]any)
 	if !ok {
 		return &TemplateTransformer{templates: make(map[string]*template.Template)}, nil
 	}

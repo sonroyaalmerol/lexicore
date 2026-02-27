@@ -3,6 +3,8 @@ package source
 import (
 	"context"
 	"maps"
+
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 )
 
 type SourceData struct {
@@ -56,7 +58,7 @@ func (g Group) DeepCopy() Group {
 
 type Source interface {
 	Name() string
-	Initialize(ctx context.Context, config map[string]any) error
+	Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error
 	Validate(ctx context.Context) error
 
 	// Connect establishes connection to the source

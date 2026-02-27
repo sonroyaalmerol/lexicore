@@ -1,3 +1,4 @@
+// pkg/source/plugin.go
 package source
 
 import (
@@ -6,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	starlarklib "codeberg.org/lexicore/lexicore/pkg/plugin"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
@@ -64,7 +66,7 @@ func NewPluginSource(scriptPath string, logger *zap.Logger) (*PluginSource, erro
 	}, nil
 }
 
-func (s *PluginSource) Initialize(ctx context.Context, config map[string]any) error {
+func (s *PluginSource) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
 	s.SetConfig(config)
 
 	initFunc, ok := s.globals["initialize"]
@@ -77,9 +79,7 @@ func (s *PluginSource) Initialize(ctx context.Context, config map[string]any) er
 		return fmt.Errorf("initialize is not callable")
 	}
 
-	configDict := goMapToStarlarkDict(config)
-
-	args := starlark.Tuple{configDict}
+	args := starlark.Tuple{configValueMapToStarlarkDict(config)}
 	result, err := starlark.Call(s.thread, callable, args, nil)
 	if err != nil {
 		return fmt.Errorf("initialize failed: %w", err)
@@ -103,8 +103,7 @@ func (s *PluginSource) Validate(ctx context.Context) error {
 		return fmt.Errorf("validate is not callable")
 	}
 
-	configDict := goMapToStarlarkDict(s.config)
-	args := starlark.Tuple{configDict}
+	args := starlark.Tuple{configValueMapToStarlarkDict(s.config)}
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
 	if err != nil {
@@ -121,7 +120,6 @@ func (s *PluginSource) Validate(ctx context.Context) error {
 func (s *PluginSource) Connect(ctx context.Context) error {
 	connectFunc, ok := s.globals["connect"]
 	if !ok {
-		// Connect is optional, return nil if not implemented
 		return nil
 	}
 
@@ -130,8 +128,7 @@ func (s *PluginSource) Connect(ctx context.Context) error {
 		return fmt.Errorf("connect is not callable")
 	}
 
-	configDict := goMapToStarlarkDict(s.config)
-	args := starlark.Tuple{configDict}
+	args := starlark.Tuple{configValueMapToStarlarkDict(s.config)}
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
 	if err != nil {
@@ -156,20 +153,14 @@ func (s *PluginSource) GetIdentities(ctx context.Context) (map[string]Identity, 
 		return nil, fmt.Errorf("get_identities is not callable")
 	}
 
-	configDict := goMapToStarlarkDict(s.config)
-	args := starlark.Tuple{configDict}
+	args := starlark.Tuple{configValueMapToStarlarkDict(s.config)}
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get_identities failed: %w", err)
 	}
 
-	identities, err := starlarkToIdentities(result)
-	if err != nil {
-		return nil, err
-	}
-
-	return identities, nil
+	return starlarkToIdentities(result)
 }
 
 func (s *PluginSource) GetGroups(ctx context.Context) (map[string]Group, error) {
@@ -183,26 +174,19 @@ func (s *PluginSource) GetGroups(ctx context.Context) (map[string]Group, error) 
 		return nil, fmt.Errorf("get_groups is not callable")
 	}
 
-	configDict := goMapToStarlarkDict(s.config)
-	args := starlark.Tuple{configDict}
+	args := starlark.Tuple{configValueMapToStarlarkDict(s.config)}
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get_groups failed: %w", err)
 	}
 
-	groups, err := starlarkToGroups(result)
-	if err != nil {
-		return nil, err
-	}
-
-	return groups, nil
+	return starlarkToGroups(result)
 }
 
 func (s *PluginSource) Close() error {
 	closeFunc, ok := s.globals["close"]
 	if !ok {
-		// Close is optional
 		return nil
 	}
 
@@ -223,12 +207,10 @@ func (s *PluginSource) Close() error {
 	return nil
 }
 
-// Helper functions
-
-func goMapToStarlarkDict(m map[string]any) *starlark.Dict {
+func configValueMapToStarlarkDict(m map[string]manifest.ConfigValue) *starlark.Dict {
 	dict := starlark.NewDict(len(m))
 	for k, v := range m {
-		dict.SetKey(starlark.String(k), goValueToStarlark(v))
+		dict.SetKey(starlark.String(k), goValueToStarlark(v.Value()))
 	}
 	return dict
 }
@@ -256,7 +238,11 @@ func goValueToStarlark(v any) starlark.Value {
 		}
 		return starlark.NewList(list)
 	case map[string]any:
-		return goMapToStarlarkDict(val)
+		dict := starlark.NewDict(len(val))
+		for k, item := range val {
+			dict.SetKey(starlark.String(k), goValueToStarlark(item))
+		}
+		return dict
 	default:
 		return starlark.String(fmt.Sprintf("%v", v))
 	}

@@ -53,7 +53,7 @@ func (v *Validator) validateIdentitySource(source *IdentitySource) error {
 	}
 }
 
-func (v *Validator) validateLDAPConfig(config map[string]any) error {
+func (v *Validator) validateLDAPConfig(config map[string]ConfigValue) error {
 	required := []string{"url", "bindDN", "bindPassword", "baseDN"}
 	for _, field := range required {
 		if _, ok := config[field]; !ok {
@@ -64,7 +64,6 @@ func (v *Validator) validateLDAPConfig(config map[string]any) error {
 }
 
 func (v *Validator) validateSyncTarget(target *SyncTarget) error {
-	// Validate API version
 	if err := v.validateAPIVersion(target.APIVersion); err != nil {
 		return err
 	}
@@ -119,12 +118,9 @@ func (v *Validator) validateTransformer(transformer *TransformerConfig) error {
 		return fmt.Errorf("transformer type is required")
 	}
 
-	// Validate known transformer types
 	switch transformer.Type {
 	case "selector", "constant", "template", "sanitizers":
-		// Valid types
 	default:
-		// Unknown types are warnings, not errors (for extensibility)
 	}
 
 	return nil

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -442,7 +443,7 @@ func (m *Manager) applyTransformations(
 ) {
 	attrPrefix := ""
 	if anyPrefix, ok := target.manifest.Spec.Config["attributePrefix"]; ok {
-		if strPrefix, ok := anyPrefix.(string); ok {
+		if strPrefix, ok := anyPrefix.Value().(string); ok {
 			attrPrefix = strPrefix
 		}
 	}
@@ -502,21 +503,22 @@ func (m *Manager) generateAuditReportIfNeeded(
 	targetName string,
 	result *operator.SyncResult,
 ) {
-	if target.manifest.Spec.Config["generateAuditReport"] != true {
+	if target.manifest.Spec.Config["generateAuditReport"].Value() != true {
 		return
 	}
 
-	if err := os.MkdirAll("/var/lib/lexicore/csv", os.ModeDir); err != nil {
+	if err := os.MkdirAll(m.cfg.Server.AuditsDir, 0755); err != nil {
 		m.logger.Error("Failed to create audit report directory", zap.Error(err))
 		return
 	}
 
 	filename := fmt.Sprintf(
-		"/var/lib/lexicore/csv/audit_log_%s_%d.xls",
+		"audit_log_%s_%d.xls",
 		targetName,
 		time.Now().Unix(),
 	)
-	file, err := os.Create(filename)
+	fullPath := filepath.Join(m.cfg.Server.AuditsDir, filename)
+	file, err := os.Create(fullPath)
 	if err != nil {
 		m.logger.Error("Failed to create audit report file", zap.Error(err))
 		return

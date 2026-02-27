@@ -4,111 +4,84 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type IdentitySourceSpec struct {
-	Type       string         `json:"type"` // ldap, okta, etc.
-	Config     map[string]any `json:"config"`
-	SyncPeriod string         `json:"syncPeriod"`
+type ValueFromSource struct {
+	Env  string `yaml:"env,omitempty"  json:"env,omitempty"`
+	File string `yaml:"file,omitempty" json:"file,omitempty"`
+}
 
-	// Plugin source for Starlark-based operators
-	// When specified, the operator field should be set to "starlark"
-	// +optional
-	PluginSource *PluginSource `json:"pluginSource,omitempty"`
+type SecretValue struct {
+	Value     *string          `yaml:"value,omitempty"     json:"value,omitempty"`
+	ValueFrom *ValueFromSource `yaml:"valueFrom,omitempty" json:"valueFrom,omitempty"`
+}
+
+type IdentitySourceSpec struct {
+	Type         string                 `yaml:"type"       json:"type"`
+	Config       map[string]ConfigValue `yaml:"config"     json:"config"`
+	SyncPeriod   string                 `yaml:"syncPeriod" json:"syncPeriod"`
+	PluginSource *PluginSource          `yaml:"pluginSource,omitempty" json:"pluginSource,omitempty"`
 }
 
 type IdentitySource struct {
 	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata"`
-	Spec              IdentitySourceSpec `json:"spec"`
+	metav1.ObjectMeta `yaml:"metadata" json:"metadata"`
+	Spec              IdentitySourceSpec `yaml:"spec" json:"spec"`
 }
 
 type PluginSource struct {
-	// Type specifies how to fetch the plugin (file, git)
-	Type string `json:"type"`
-
-	// File-based plugin configuration
-	File *FilePluginSource `json:"file,omitempty"`
-
-	// Git-based plugin configuration
-	Git *GitPluginSource `json:"git,omitempty"`
+	Type string            `yaml:"type" json:"type"`
+	File *FilePluginSource `yaml:"file,omitempty" json:"file,omitempty"`
+	Git  *GitPluginSource  `yaml:"git,omitempty"  json:"git,omitempty"`
 }
 
 type FilePluginSource struct {
-	// Path to the Starlark script file
-	Path string `json:"path"`
+	Path string `yaml:"path" json:"path"`
 }
 
 type GitPluginSource struct {
-	// Repository URL
-	URL string `json:"url"`
-
-	// Ref to checkout (branch, tag, or commit SHA)
-	// +optional
-	Ref string `json:"ref,omitempty"`
-
-	// Path to the Starlark script within the repository
-	Path string `json:"path"`
-
-	// Authentication credentials
-	// +optional
-	Auth *GitAuth `json:"auth,omitempty"`
+	URL  string   `yaml:"url"            json:"url"`
+	Ref  string   `yaml:"ref,omitempty"  json:"ref,omitempty"`
+	Path string   `yaml:"path"           json:"path"`
+	Auth *GitAuth `yaml:"auth,omitempty" json:"auth,omitempty"`
 }
 
 type GitAuth struct {
-	// SecretRef references a Secret containing auth credentials
-	SecretRef string `json:"secretRef"`
+	SecretRef string `yaml:"secretRef" json:"secretRef"`
 }
 
 type SyncTargetSpec struct {
-	SourceRef    string              `json:"sourceRef"`
-	Operator     string              `json:"operator"`
-	Transformers []TransformerConfig `json:"transformers"`
-	Config       map[string]any      `json:"config"`
-	DryRun       bool                `json:"dryRun"`
-
-	// Plugin source for Starlark-based operators
-	// When specified, the operator field should be set to "starlark"
-	// +optional
-	PluginSource *PluginSource `json:"pluginSource,omitempty"`
+	SourceRef    string                 `yaml:"sourceRef"              json:"sourceRef"`
+	Operator     string                 `yaml:"operator"               json:"operator"`
+	Transformers []TransformerConfig    `yaml:"transformers"           json:"transformers"`
+	Config       map[string]ConfigValue `yaml:"config"                 json:"config"`
+	DryRun       bool                   `yaml:"dryRun"                 json:"dryRun"`
+	PluginSource *PluginSource          `yaml:"pluginSource,omitempty" json:"pluginSource,omitempty"`
 }
 
 type TransformerConfig struct {
-	Name   string         `json:"name"`
-	Type   string         `json:"type"`
-	Config map[string]any `json:"config"`
+	Name   string                 `yaml:"name"   json:"name"`
+	Type   string                 `yaml:"type"   json:"type"`
+	Config map[string]ConfigValue `yaml:"config" json:"config"`
 }
 
 type SyncTarget struct {
 	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata"`
-	Spec              SyncTargetSpec   `json:"spec"`
-	Status            SyncTargetStatus `json:"status"`
+	metav1.ObjectMeta `yaml:"metadata" json:"metadata"`
+	Spec              SyncTargetSpec   `yaml:"spec"   json:"spec"`
+	Status            SyncTargetStatus `yaml:"status" json:"status"`
 }
 
 type SyncTargetStatus struct {
-	LastSync      metav1.Time `json:"lastSync"`
-	Status        string      `json:"status"`
-	Message       string      `json:"message"`
-	IdentityCount int         `json:"identityCount"`
-	GroupCount    int         `json:"groupCount"`
-
-	// PluginStatus contains information about the loaded plugin
-	// +optional
-	PluginStatus *PluginStatus `json:"pluginStatus,omitempty"`
+	LastSync      metav1.Time   `yaml:"lastSync"      json:"lastSync"`
+	Status        string        `yaml:"status"        json:"status"`
+	Message       string        `yaml:"message"       json:"message"`
+	IdentityCount int           `yaml:"identityCount" json:"identityCount"`
+	GroupCount    int           `yaml:"groupCount"    json:"groupCount"`
+	PluginStatus  *PluginStatus `yaml:"pluginStatus,omitempty" json:"pluginStatus,omitempty"`
 }
 
 type PluginStatus struct {
-	// Loaded indicates if the plugin was successfully loaded
-	Loaded bool `json:"loaded"`
-
-	// Source tracking for Git-based plugins
-	// +optional
-	GitCommit string `json:"gitCommit,omitempty"`
-
-	// LastUpdated tracks when the plugin was last fetched
-	// +optional
-	LastUpdated metav1.Time `json:"lastUpdated,omitempty"`
-
-	// Error message if plugin failed to load
-	// +optional
-	Error string `json:"error,omitempty"`
+	Loaded      bool        `yaml:"loaded"               json:"loaded"`
+	GitCommit   string      `yaml:"gitCommit,omitempty"  json:"gitCommit,omitempty"`
+	LastUpdated metav1.Time `yaml:"lastUpdated,omitempty" json:"lastUpdated,omitempty"`
+	Error       string      `yaml:"error,omitempty"      json:"error,omitempty"`
 }

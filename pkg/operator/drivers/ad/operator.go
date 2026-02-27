@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/go-ldap/ldap/v3"
@@ -15,7 +16,7 @@ type ADOperator struct {
 	conn *ldap.Conn
 }
 
-func (o *ADOperator) Initialize(ctx context.Context, config map[string]any) error {
+func (o *ADOperator) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
 	o.SetConfig(config)
 	if err := o.Validate(ctx); err != nil {
 		return err
@@ -120,7 +121,7 @@ func (o *ADOperator) PartialSync(ctx context.Context, state *operator.PartialSyn
 	concurrency := o.GetConcurrency()
 	if concurrency <= 1 {
 		for uid, id := range state.Identities {
-			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result, true)
+			o.syncIdentity(o.conn, uid, id, searchBaseDN, state.DryRun, state.Result, false)
 		}
 		return nil
 	}

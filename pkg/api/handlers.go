@@ -10,59 +10,29 @@ import (
 	"time"
 
 	"codeberg.org/lexicore/lexicore/pkg/controller"
-	"codeberg.org/lexicore/lexicore/pkg/manifest"
-	"codeberg.org/lexicore/lexicore/pkg/store"
 	"go.uber.org/zap"
 )
 
-func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, mgr *controller.Manager, logger *zap.Logger) {
-	p := manifest.NewParser()
-
+func SetupRoutes(
+	mux *http.ServeMux,
+	ctx context.Context,
+	mgr *controller.Manager,
+	logger *zap.Logger,
+) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 
 	mux.HandleFunc("/apis/lexicore.io/v1/identitysources", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(mgr.GetIdentitySources()); err != nil {
-				logger.Error("Failed to encode response", zap.Error(err))
-				http.Error(w, "Internal error", http.StatusInternalServerError)
-			}
-
-		case http.MethodPost:
-			b, err := io.ReadAll(r.Body)
-			if err != nil {
-				http.Error(w, "Failed to read body", http.StatusBadRequest)
-				return
-			}
-
-			m, err := p.Parse(b)
-			if err != nil {
-				logger.Error("Failed to parse manifest", zap.Error(err))
-				http.Error(w, "Invalid manifest", http.StatusBadRequest)
-				return
-			}
-
-			src, ok := m.(*manifest.IdentitySource)
-			if !ok {
-				http.Error(w, "Invalid manifest type", http.StatusBadRequest)
-				return
-			}
-
-			if err := db.Put(ctx, "identitysources", src.Name, src); err != nil {
-				logger.Error("Store put failed", zap.Error(err))
-				http.Error(w, "Store error", http.StatusInternalServerError)
-				return
-			}
-
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": src.Name})
-
-		default:
+		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(mgr.GetIdentitySources()); err != nil {
+			logger.Error("Failed to encode response", zap.Error(err))
+			http.Error(w, "Internal error", http.StatusInternalServerError)
 		}
 	})
 
@@ -122,7 +92,8 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 				return
 			}
 
-			response := map[string]any{
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]any{
 				"source": sourceName,
 				"identities": map[string]any{
 					"count": len(identities),
@@ -132,11 +103,7 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 					"count": len(groups),
 					"items": groups,
 				},
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			if err := json.NewEncoder(w).Encode(response); err != nil {
+			}); err != nil {
 				logger.Error("Failed to encode response", zap.Error(err))
 			}
 			return
@@ -149,6 +116,7 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 			}
 
 			payload, err := io.ReadAll(r.Body)
+			defer r.Body.Close()
 			if err != nil {
 				logger.Error("Failed to read webhook payload",
 					zap.String("source", sourceName),
@@ -156,7 +124,6 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 				http.Error(w, "Failed to read payload", http.StatusBadRequest)
 				return
 			}
-			defer r.Body.Close()
 
 			logger.Info("Received webhook",
 				zap.String("source", sourceName),
@@ -189,45 +156,14 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 	})
 
 	mux.HandleFunc("/apis/lexicore.io/v1/synctargets", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(mgr.GetSyncTargets()); err != nil {
-				logger.Error("Failed to encode response", zap.Error(err))
-				http.Error(w, "Internal error", http.StatusInternalServerError)
-			}
-
-		case http.MethodPost:
-			b, err := io.ReadAll(r.Body)
-			if err != nil {
-				http.Error(w, "Failed to read body", http.StatusBadRequest)
-				return
-			}
-
-			m, err := p.Parse(b)
-			if err != nil {
-				logger.Error("Failed to parse manifest", zap.Error(err))
-				http.Error(w, "Invalid manifest", http.StatusBadRequest)
-				return
-			}
-
-			target, ok := m.(*manifest.SyncTarget)
-			if !ok {
-				http.Error(w, "Invalid manifest type", http.StatusBadRequest)
-				return
-			}
-
-			if err := db.Put(ctx, "synctargets", target.Name, target); err != nil {
-				logger.Error("Store put failed", zap.Error(err))
-				http.Error(w, "Store error", http.StatusInternalServerError)
-				return
-			}
-
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"status": "created", "name": target.Name})
-
-		default:
+		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(mgr.GetSyncTargets()); err != nil {
+			logger.Error("Failed to encode response", zap.Error(err))
+			http.Error(w, "Internal error", http.StatusInternalServerError)
 		}
 	})
 
@@ -235,16 +171,12 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 		path := strings.TrimPrefix(r.URL.Path, "/apis/lexicore.io/v1/synctargets/")
 		parts := strings.Split(path, "/")
 
-		if len(parts) != 2 || parts[1] != "reconcile" {
+		if len(parts) != 2 || parts[1] != "reconcile" || parts[0] == "" {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
 
 		targetName := parts[0]
-		if targetName == "" {
-			http.Error(w, "Target name required", http.StatusBadRequest)
-			return
-		}
 
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -259,7 +191,6 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 			logger.Error("Failed to trigger reconciliation",
 				zap.String("target", targetName),
 				zap.Error(err))
-
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{
@@ -287,7 +218,7 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 
 		targets := mgr.GetSyncTargets()
 		queued := 0
-		failed := []string{}
+		var failed []string
 
 		for _, target := range targets {
 			if err := mgr.TriggerReconciliation(target.Name); err != nil {
@@ -301,7 +232,6 @@ func SetupRoutes(mux *http.ServeMux, ctx context.Context, db *store.EtcdStore, m
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-
 		if len(failed) == 0 {
 			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]any{

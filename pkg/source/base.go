@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"sync"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"go.uber.org/zap"
 )
 
 type BaseSource struct {
 	name   string
-	config map[string]any
+	config map[string]manifest.ConfigValue
 	mu     sync.RWMutex
 	logger *zap.Logger
 }
@@ -25,7 +26,7 @@ func (b *BaseSource) Name() string {
 	return b.name
 }
 
-func (b *BaseSource) GetConfig(key string) (any, bool) {
+func (b *BaseSource) GetConfig(key string) (manifest.ConfigValue, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	val, ok := b.config[key]
@@ -33,24 +34,20 @@ func (b *BaseSource) GetConfig(key string) (any, bool) {
 }
 
 func (b *BaseSource) GetStringConfig(key string) (string, error) {
-	val, ok := b.GetConfig(key)
-	if !ok {
-		return "", fmt.Errorf("config key %s not found", key)
+	config, ok := b.GetConfig(key)
+	if !ok || config.String() == "" {
+		return "", fmt.Errorf("config not found: %s", key)
 	}
-	str, ok := val.(string)
-	if !ok {
-		return "", fmt.Errorf("config key %s is not a string", key)
-	}
-	return str, nil
+	return config.String(), nil
 }
 
-func (b *BaseSource) GetRawConfig() map[string]any {
+func (b *BaseSource) GetRawConfig() map[string]manifest.ConfigValue {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.config
 }
 
-func (b *BaseSource) SetConfig(config map[string]any) {
+func (b *BaseSource) SetConfig(config map[string]manifest.ConfigValue) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.config = config

@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/utils"
 	"github.com/huandu/go-clone"
@@ -22,7 +23,7 @@ type GroupAggregationMapping struct {
 	WeightAttribute string
 }
 
-func NewGroupAggregationTransformer(config map[string]any) (*GroupAggregationTransformer, error) {
+func NewGroupAggregationTransformer(config map[string]manifest.ConfigValue) (*GroupAggregationTransformer, error) {
 	mappingsRaw, ok := config["mappings"]
 	if !ok {
 		return &GroupAggregationTransformer{mappings: []GroupAggregationMapping{}}, nil
@@ -30,7 +31,7 @@ func NewGroupAggregationTransformer(config map[string]any) (*GroupAggregationTra
 
 	var mappings []GroupAggregationMapping
 
-	switch v := mappingsRaw.(type) {
+	switch v := mappingsRaw.Value().(type) {
 	case []GroupAggregationMapping:
 		mappings = v
 	case []any:

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
@@ -15,8 +16,8 @@ type Selector interface {
 	Apply(identity *source.Identity, allGroups map[string]source.Group) bool
 }
 
-func NewSelectorTransformer(config map[string]any) (*SelectorTransformer, error) {
-	selectorsConfig, ok := config["selectors"].([]any)
+func NewSelectorTransformer(config map[string]manifest.ConfigValue) (*SelectorTransformer, error) {
+	selectorsConfig, ok := config["selectors"].Value().([]any)
 	if !ok {
 		return &SelectorTransformer{selectors: []Selector{}}, nil
 	}

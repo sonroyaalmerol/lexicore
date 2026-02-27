@@ -4,20 +4,21 @@ import (
 	"context"
 	"testing"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSelectorTransformer_RegexSelector(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":    "regex",
 				"field":   "username",
 				"pattern": "^admin.*",
 			},
-		},
+		}),
 	}
 
 	ft, err := NewSelectorTransformer(config)
@@ -40,14 +41,14 @@ func TestSelectorTransformer_RegexSelector(t *testing.T) {
 }
 
 func TestSelectorTransformer_StrictSelector(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":  "strict",
 				"field": "username",
 				"value": "admin",
 			},
-		},
+		}),
 	}
 
 	ft, err := NewSelectorTransformer(config)
@@ -68,14 +69,14 @@ func TestSelectorTransformer_StrictSelector(t *testing.T) {
 }
 
 func TestSelectorTransformer_EmailRegex(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":    "regex",
 				"field":   "email",
 				"pattern": "@example\\.com$",
 			},
-		},
+		}),
 	}
 
 	ft, err := NewSelectorTransformer(config)
@@ -97,7 +98,7 @@ func TestSelectorTransformer_EmailRegex(t *testing.T) {
 }
 
 func TestSelectorTransformer_NoSelectors(t *testing.T) {
-	config := map[string]any{}
+	config := map[string]manifest.ConfigValue{}
 
 	ft, err := NewSelectorTransformer(config)
 	require.NoError(t, err)
@@ -115,8 +116,8 @@ func TestSelectorTransformer_NoSelectors(t *testing.T) {
 }
 
 func TestSelectorTransformer_MultipleSelectors(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":  "strict",
 				"field": "username",
@@ -127,7 +128,7 @@ func TestSelectorTransformer_MultipleSelectors(t *testing.T) {
 				"field":   "email",
 				"pattern": "@example\\.com$",
 			},
-		},
+		}),
 	}
 
 	ft, err := NewSelectorTransformer(config)
@@ -149,14 +150,14 @@ func TestSelectorTransformer_MultipleSelectors(t *testing.T) {
 }
 
 func TestSelectorTransformer_CustomAttribute(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":  "strict",
 				"field": "department",
 				"value": "engineering",
 			},
-		},
+		}),
 	}
 
 	ft, err := NewSelectorTransformer(config)
@@ -186,14 +187,14 @@ func TestSelectorTransformer_CustomAttribute(t *testing.T) {
 }
 
 func TestSelectorTransformer_InvalidRegex(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":    "regex",
 				"field":   "username",
 				"pattern": "[invalid(regex",
 			},
-		},
+		}),
 	}
 
 	_, err := NewSelectorTransformer(config)
@@ -202,13 +203,13 @@ func TestSelectorTransformer_InvalidRegex(t *testing.T) {
 }
 
 func TestSelectorTransformer_MissingSelectorType(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"field": "username",
 				"value": "admin",
 			},
-		},
+		}),
 	}
 
 	_, err := NewSelectorTransformer(config)
@@ -217,14 +218,14 @@ func TestSelectorTransformer_MissingSelectorType(t *testing.T) {
 }
 
 func TestSelectorTransformer_UnknownSelectorType(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":    "unknown",
 				"field":   "username",
 				"pattern": "admin",
 			},
-		},
+		}),
 	}
 
 	_, err := NewSelectorTransformer(config)

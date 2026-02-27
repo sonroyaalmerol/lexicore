@@ -4,14 +4,27 @@ import (
 	"context"
 	"testing"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"github.com/stretchr/testify/assert"
 )
 
+func cv(v any) manifest.ConfigValue {
+	return manifest.NewConfigValue(v)
+}
+
+func cvMap(m map[string]any) map[string]manifest.ConfigValue {
+	out := make(map[string]manifest.ConfigValue, len(m))
+	for k, v := range m {
+		out[k] = cv(v)
+	}
+	return out
+}
+
 func TestContext_GetConfig(t *testing.T) {
-	config := map[string]any{
-		"key1": "value1",
-		"key2": true,
-		"key3": map[string]any{"nested": "value"},
+	config := map[string]manifest.ConfigValue{
+		"key1": cv("value1"),
+		"key2": cv(true),
+		"key3": cv(map[string]any{"nested": "value"}),
 	}
 
 	ctx := NewContext(context.Background(), config)

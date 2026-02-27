@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/go-ldap/ldap/v3"
 )
@@ -46,7 +47,7 @@ type LDAPSource struct {
 	lastSyncTime            time.Time
 }
 
-func (l *LDAPSource) Initialize(ctx context.Context, config map[string]any) error {
+func (l *LDAPSource) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
 	l.SetConfig(config)
 
 	return l.Validate(ctx)

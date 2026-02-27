@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/go-ldap/ldap/v3"
@@ -15,7 +16,7 @@ type LDAPOperator struct {
 	conn *ldap.Conn
 }
 
-func (o *LDAPOperator) Initialize(ctx context.Context, config map[string]any) error {
+func (o *LDAPOperator) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
 	o.SetConfig(config)
 	if err := o.Validate(ctx); err != nil {
 		return err
@@ -121,7 +122,7 @@ func (o *LDAPOperator) createEntry(dn string, id *source.Identity) error {
 
 	classes := []string{"top", "person", "organizationalPerson", "inetOrgPerson"}
 	if customClasses, ok := o.GetConfig("objectClasses"); ok {
-		if c, ok := customClasses.([]string); ok {
+		if c, ok := customClasses.Value().([]string); ok {
 			classes = c
 		}
 	}

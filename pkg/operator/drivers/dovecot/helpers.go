@@ -49,7 +49,7 @@ func (o *DovecotOperator) mergeSharedMailAcls(acls []*ACL) []*ACL {
 
 	permsAny, ok := o.GetConfig("defaultAcls")
 	if ok {
-		if anyArr, isArr := permsAny.([]any); isArr {
+		if anyArr, isArr := permsAny.Value().([]any); isArr {
 			defaultPerms = make([]string, 0, len(anyArr))
 			for _, anyVal := range anyArr {
 				if strVal, isStr := anyVal.(string); isStr {

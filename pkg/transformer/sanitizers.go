@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
@@ -16,8 +17,8 @@ type Sanitizer interface {
 	Apply(identity *source.Identity) error
 }
 
-func NewSanitizerTransformer(config map[string]any) (*SanitizerTransformer, error) {
-	sanitizersConfig, ok := config["sanitizers"].([]any)
+func NewSanitizerTransformer(config map[string]manifest.ConfigValue) (*SanitizerTransformer, error) {
+	sanitizersConfig, ok := config["sanitizers"].Value().([]any)
 	if !ok {
 		return &SanitizerTransformer{sanitizers: []Sanitizer{}}, nil
 	}

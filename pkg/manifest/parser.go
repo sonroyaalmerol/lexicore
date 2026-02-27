@@ -35,11 +35,8 @@ func (p *Parser) ParseFile(path string) (any, error) {
 }
 
 func (p *Parser) Parse(data []byte) (any, error) {
-	expanded := os.ExpandEnv(string(data))
-	expandedBytes := []byte(expanded)
-
 	var typeMeta metav1.TypeMeta
-	if err := yaml.Unmarshal(expandedBytes, &typeMeta); err != nil {
+	if err := yaml.Unmarshal(data, &typeMeta); err != nil {
 		return nil, fmt.Errorf("failed to parse type metadata: %w", err)
 	}
 
@@ -51,13 +48,13 @@ func (p *Parser) Parse(data []byte) (any, error) {
 	switch typeMeta.Kind {
 	case "IdentitySource":
 		source := &IdentitySource{}
-		if err := yaml.Unmarshal(expandedBytes, source); err != nil {
+		if err := yaml.Unmarshal(data, source); err != nil {
 			return nil, fmt.Errorf("failed to parse IdentitySource: %w", err)
 		}
 		manifest = source
 	case "SyncTarget":
 		target := &SyncTarget{}
-		if err := yaml.Unmarshal(expandedBytes, target); err != nil {
+		if err := yaml.Unmarshal(data, target); err != nil {
 			return nil, fmt.Errorf("failed to parse SyncTarget: %w", err)
 		}
 		manifest = target

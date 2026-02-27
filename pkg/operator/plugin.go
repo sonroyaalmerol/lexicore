@@ -1,3 +1,4 @@
+// pkg/operator/plugin.go
 package operator
 
 import (
@@ -6,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	starlarklib "codeberg.org/lexicore/lexicore/pkg/plugin"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"go.starlark.net/starlark"
@@ -65,7 +67,7 @@ func NewPluginOperator(scriptPath string, logger *zap.Logger) (*PluginOperator, 
 	}, nil
 }
 
-func (s *PluginOperator) Initialize(ctx context.Context, config map[string]any) error {
+func (s *PluginOperator) Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error {
 	s.SetConfig(config)
 
 	initFunc, ok := s.globals["initialize"]
@@ -78,7 +80,7 @@ func (s *PluginOperator) Initialize(ctx context.Context, config map[string]any) 
 		return fmt.Errorf("initialize is not callable")
 	}
 
-	configDict := goMapToPluginDict(config)
+	configDict := configValueMapToPluginDict(config)
 
 	args := starlark.Tuple{configDict}
 	result, err := starlark.Call(s.thread, callable, args, nil)
@@ -104,7 +106,7 @@ func (s *PluginOperator) Validate(ctx context.Context) error {
 		return fmt.Errorf("validate is not callable")
 	}
 
-	configDict := goMapToPluginDict(s.config)
+	configDict := configValueMapToPluginDict(s.config)
 	args := starlark.Tuple{configDict}
 
 	result, err := starlark.Call(s.thread, callable, args, nil)
@@ -160,10 +162,10 @@ func (s *PluginOperator) Close() error {
 	return nil
 }
 
-func goMapToPluginDict(m map[string]any) *starlark.Dict {
+func configValueMapToPluginDict(m map[string]manifest.ConfigValue) *starlark.Dict {
 	dict := starlark.NewDict(len(m))
 	for k, v := range m {
-		dict.SetKey(starlark.String(k), goValueToPlugin(v))
+		dict.SetKey(starlark.String(k), goValueToPlugin(v.Value()))
 	}
 	return dict
 }
@@ -191,7 +193,11 @@ func goValueToPlugin(v any) starlark.Value {
 		}
 		return starlark.NewList(list)
 	case map[string]any:
-		return goMapToPluginDict(val)
+		dict := starlark.NewDict(len(val))
+		for k, item := range val {
+			dict.SetKey(starlark.String(k), goValueToPlugin(item))
+		}
+		return dict
 	default:
 		return starlark.String(fmt.Sprintf("%v", v))
 	}
@@ -231,7 +237,7 @@ func identityToPlugin(id *source.Identity) *starlark.Dict {
 	}
 	dict.SetKey(starlark.String("groups"), starlark.NewList(groups))
 
-	dict.SetKey(starlark.String("attributes"), goMapToPluginDict(id.Attributes))
+	dict.SetKey(starlark.String("attributes"), goValueToPlugin(id.Attributes))
 	return dict
 }
 
@@ -246,7 +252,7 @@ func groupToPlugin(g *source.Group) *starlark.Dict {
 		members[i] = starlark.String(member)
 	}
 	dict.SetKey(starlark.String("members"), starlark.NewList(members))
-	dict.SetKey(starlark.String("attributes"), goMapToPluginDict(g.Attributes))
+	dict.SetKey(starlark.String("attributes"), goValueToPlugin(g.Attributes))
 
 	return dict
 }

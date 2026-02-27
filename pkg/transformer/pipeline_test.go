@@ -11,14 +11,14 @@ import (
 )
 
 func TestSelectorTransformer_Transform(t *testing.T) {
-	config := map[string]any{
-		"selectors": []any{
+	config := map[string]manifest.ConfigValue{
+		"selectors": cv([]any{
 			map[string]any{
 				"type":    "regex",
 				"field":   "username",
 				"pattern": "^user[13]$",
 			},
-		},
+		}),
 	}
 
 	ft, err := NewSelectorTransformer(config)
@@ -40,11 +40,11 @@ func TestSelectorTransformer_Transform(t *testing.T) {
 }
 
 func TestTemplateTransformer_Transform(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"fullEmail": "{{.Username}}@example.com",
 			"maildir":   "/var/mail/{{.Username}}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -70,14 +70,14 @@ func TestPipeline_Execute(t *testing.T) {
 		{
 			Name: "selector",
 			Type: "selector",
-			Config: map[string]any{
-				"selectors": []any{
+			Config: map[string]manifest.ConfigValue{
+				"selectors": cv([]any{
 					map[string]any{
 						"type":  "strict",
 						"field": "username",
 						"value": "user1",
 					},
-				},
+				}),
 			},
 		},
 	}

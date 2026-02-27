@@ -5,17 +5,18 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestTemplateTransformer_BasicTemplate(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"fullEmail": "{{.Username}}@example.com",
 			"maildir":   "/var/mail/{{.Username}}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -37,10 +38,10 @@ func TestTemplateTransformer_BasicTemplate(t *testing.T) {
 }
 
 func TestTemplateTransformer_MultipleFields(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"displayName": "{{.Username}} ({{.Email}})",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -66,10 +67,10 @@ func TestTemplateTransformer_MultipleFields(t *testing.T) {
 }
 
 func TestTemplateTransformer_AttributeAccess(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"summary": "User {{.Username}} from {{.Attributes.department}}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -96,7 +97,7 @@ func TestTemplateTransformer_AttributeAccess(t *testing.T) {
 }
 
 func TestTemplateTransformer_EmptyConfig(t *testing.T) {
-	config := map[string]any{}
+	config := map[string]manifest.ConfigValue{}
 
 	tt, err := NewTemplateTransformer(config)
 	require.NoError(t, err)
@@ -118,10 +119,10 @@ func TestTemplateTransformer_EmptyConfig(t *testing.T) {
 }
 
 func TestTemplateTransformer_InvalidTemplate(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"invalid": "{{.Username",
-		},
+		}),
 	}
 
 	_, err := NewTemplateTransformer(config)
@@ -130,11 +131,11 @@ func TestTemplateTransformer_InvalidTemplate(t *testing.T) {
 }
 
 func TestTemplateTransformer_NonStringTemplate(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"number": 123,
 			"valid":  "{{.Username}}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -146,10 +147,10 @@ func TestTemplateTransformer_NonStringTemplate(t *testing.T) {
 }
 
 func TestTemplateTransformer_NilAttributes(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"email": "{{.Username}}@example.com",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -171,10 +172,10 @@ func TestTemplateTransformer_NilAttributes(t *testing.T) {
 }
 
 func TestTemplateTransformer_MultipleIdentities(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"email": "{{.Username}}@example.com",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -197,10 +198,10 @@ func TestTemplateTransformer_MultipleIdentities(t *testing.T) {
 }
 
 func TestTemplateTransformer_ComplexTemplate(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"path": "/home/{{.Username}}/{{.Attributes.project}}/data",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -223,10 +224,10 @@ func TestTemplateTransformer_ComplexTemplate(t *testing.T) {
 }
 
 func TestTemplateTransformer_OverwriteExisting(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"email": "{{.Username}}@newdomain.com",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -253,12 +254,12 @@ func TestTemplateTransformer_OverwriteExisting(t *testing.T) {
 }
 
 func TestTemplateTransformer_ArrayExpansion(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"groups":      "{{.Attributes.groupList | toJson}}",
 			"permissions": "{{.Attributes.perms | toJson}}",
 			"email":       "{{.Username}}@example.com",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -291,10 +292,10 @@ func TestTemplateTransformer_ArrayExpansion(t *testing.T) {
 }
 
 func TestTemplateTransformer_ArrayExpansion_IntSlice(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"ids": "{{.Attributes.userIds | toJson}}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -320,10 +321,10 @@ func TestTemplateTransformer_ArrayExpansion_IntSlice(t *testing.T) {
 }
 
 func TestTemplateTransformer_ArrayExpansion_MailSettings(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"iredadmin:enabledService": "{{ .Attributes.mailEnabledService | toJson }}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -357,11 +358,11 @@ func TestTemplateTransformer_ArrayExpansion_MailSettings(t *testing.T) {
 }
 
 func TestTemplateTransformer_ArrayExpansion_ComplexTemplate(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"combined": "{{.Username}}-{{.Attributes.groupList}}",
 			"pure":     "{{.Attributes.groupList | toJson}}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -389,10 +390,10 @@ func TestTemplateTransformer_ArrayExpansion_ComplexTemplate(t *testing.T) {
 }
 
 func TestTemplateTransformer_ArrayExpansion_EmptyArray(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"groups": "{{.Attributes.groupList | toJson}}",
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -418,14 +419,14 @@ func TestTemplateTransformer_ArrayExpansion_EmptyArray(t *testing.T) {
 }
 
 func TestTemplateTransformer_StringFunctions(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"upperName":  `{{.Username | upper}}`,
 			"lowerEmail": `{{.Email | lower}}`,
 			"trimmed":    `{{.Attributes.text | trim}}`,
 			"replaced":   `{{.Username | replace "o" "0"}}`,
 			"joined":     `{{.Attributes.items | join ","}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -455,10 +456,10 @@ func TestTemplateTransformer_StringFunctions(t *testing.T) {
 
 func TestTemplateTransformer_EncodingFunctions(t *testing.T) {
 	t.Run("encode", func(t *testing.T) {
-		config := map[string]any{
-			"templates": map[string]any{
+		config := map[string]manifest.ConfigValue{
+			"templates": cv(map[string]any{
 				"encoded": `{{.Username | b64enc}}`,
-			},
+			}),
 		}
 
 		tt, err := NewTemplateTransformer(config)
@@ -479,10 +480,10 @@ func TestTemplateTransformer_EncodingFunctions(t *testing.T) {
 	})
 
 	t.Run("decode", func(t *testing.T) {
-		config := map[string]any{
-			"templates": map[string]any{
+		config := map[string]manifest.ConfigValue{
+			"templates": cv(map[string]any{
 				"decoded": `{{.Attributes.encoded | b64dec}}`,
-			},
+			}),
 		}
 
 		tt, err := NewTemplateTransformer(config)
@@ -507,11 +508,11 @@ func TestTemplateTransformer_EncodingFunctions(t *testing.T) {
 }
 
 func TestTemplateTransformer_JsonFunctions(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"json":       `{{.Attributes.data | toJson}}`,
 			"prettyJson": `{{.Attributes.data | toPrettyJson}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -546,11 +547,11 @@ func TestTemplateTransformer_JsonFunctions(t *testing.T) {
 }
 
 func TestTemplateTransformer_DefaultFunction(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"email":      `{{default "noreply@example.com" .Email}}`,
 			"department": `{{default "Unknown" .Attributes.dept}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -573,10 +574,10 @@ func TestTemplateTransformer_DefaultFunction(t *testing.T) {
 }
 
 func TestTemplateTransformer_TernaryFunction(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"status": `{{ternary "active" "inactive" (eq .Username "john")}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -596,13 +597,13 @@ func TestTemplateTransformer_TernaryFunction(t *testing.T) {
 }
 
 func TestTemplateTransformer_ListFunctions(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"firstGroup": `{{.Attributes.groups | first}}`,
 			"lastGroup":  `{{.Attributes.groups | last}}`,
 			"restGroups": `{{.Attributes.groups | rest | join ","}}`,
 			"uniqueNums": `{{.Attributes.numbers | uniq | toJson}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -632,11 +633,11 @@ func TestTemplateTransformer_ListFunctions(t *testing.T) {
 }
 
 func TestTemplateTransformer_RegexFunctions(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"matches":   `{{regexMatch "^jo" .Username}}`,
 			"sanitized": `{{regexReplaceAll "[^a-z]" "" .Attributes.text}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -660,11 +661,11 @@ func TestTemplateTransformer_RegexFunctions(t *testing.T) {
 }
 
 func TestTemplateTransformer_QuoteFunctions(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"quoted":  `{{.Username | quote}}`,
 			"squoted": `{{.Username | squote}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -686,10 +687,10 @@ func TestTemplateTransformer_QuoteFunctions(t *testing.T) {
 }
 
 func TestTemplateTransformer_ComplexPipeline(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"email": `{{.Username | lower | trimSuffix "_temp" }}@{{.Attributes.domain | default "example.com"}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -712,12 +713,12 @@ func TestTemplateTransformer_ComplexPipeline(t *testing.T) {
 }
 
 func TestTemplateTransformer_AutoParseNumbers(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"age":     `42`,
 			"pi":      `3.14159`,
 			"isAdmin": `true`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)
@@ -740,10 +741,10 @@ func TestTemplateTransformer_AutoParseNumbers(t *testing.T) {
 }
 
 func TestTemplateTransformer_DictFunction(t *testing.T) {
-	config := map[string]any{
-		"templates": map[string]any{
+	config := map[string]manifest.ConfigValue{
+		"templates": cv(map[string]any{
 			"metadata": `{{dict "user" .Username "email" .Email | toJson}}`,
-		},
+		}),
 	}
 
 	tt, err := NewTemplateTransformer(config)

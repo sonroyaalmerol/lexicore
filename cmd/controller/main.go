@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,8 +15,8 @@ import (
 	"codeberg.org/lexicore/lexicore/pkg/config"
 	"codeberg.org/lexicore/lexicore/pkg/controller"
 	"codeberg.org/lexicore/lexicore/pkg/store"
+	"github.com/goccy/go-yaml"
 
-	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -28,6 +29,11 @@ func main() {
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg = config.DefaultConfig()
+			if err := writeDefaultConfig(*configPath, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not write default config: %v\n", err)
+			} else {
+				fmt.Printf("Generated default config at %s\n", *configPath)
+			}
 		} else {
 			panic(err)
 		}
@@ -36,71 +42,22 @@ func main() {
 	logger := initLogger(cfg.Logging)
 	defer logger.Sync()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
 	defer stop()
 
-	var etcdServer *embed.Etcd
-	var endpoints []string
-
-	if len(cfg.Etcd.Endpoints) > 0 {
-		endpoints = cfg.Etcd.Endpoints
-		logger.Info("Using external etcd cluster",
-			zap.Strings("endpoints", endpoints))
-	} else {
-		etcdServer = store.StartEmbeddedHA(cfg.Etcd, logger)
-		defer etcdServer.Close()
-
-		logger.Info("Starting auto-discovery of nodes")
-		endpoints = store.GetEtcdEndpoints(cfg.Etcd, logger)
-		logger.Info("Using embedded etcd",
-			zap.Strings("endpoints", endpoints))
-	}
-
-	// Wait a moment for etcd to stabilize
-	time.Sleep(2 * time.Second)
-
-	if etcdServer != nil {
-		snapshotMgr := store.NewSnapshotManager(
-			cfg.Etcd.DataDir,
-			filepath.Join(cfg.Etcd.DataDir, "snapshots"),
-			7*24*time.Hour,
-			logger,
-		)
-
-		go func() {
-			ticker := time.NewTicker(6 * time.Hour)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					snapCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-					_, err := snapshotMgr.TakeSnapshot(snapCtx, endpoints[0])
-					if err != nil {
-						logger.Error("Failed to take snapshot", zap.Error(err))
-					}
-					cancel()
-
-					if err := snapshotMgr.CleanupOldSnapshots(); err != nil {
-						logger.Warn("Failed to cleanup old snapshots", zap.Error(err))
-					}
-				}
-			}
-		}()
-	}
-
-	db, err := store.NewEtcdStore(endpoints, 5*time.Second)
+	db, err := initStore(cfg)
 	if err != nil {
-		logger.Fatal("Store init failed", zap.Error(err))
+		logger.Fatal("Failed to initialize store", zap.Error(err))
 	}
-	defer db.Close()
 
 	mgr := controller.NewManager(ctx, cfg, db, logger)
 
 	mux := http.NewServeMux()
-	api.SetupRoutes(mux, ctx, db, mgr, logger)
+	api.SetupRoutes(mux, ctx, mgr, logger)
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Address,
@@ -117,6 +74,7 @@ func main() {
 		}
 	}()
 
+	mgr.Start(ctx)
 	<-ctx.Done()
 	logger.Info("Shutting down...")
 
@@ -127,6 +85,38 @@ func main() {
 	}
 
 	logger.Info("Shutdown complete")
+}
+
+func writeDefaultConfig(path string, cfg *config.Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return yaml.NewEncoder(f).Encode(cfg)
+}
+
+func initStore(cfg *config.Config) (store.Store, error) {
+	switch cfg.Store.Mode {
+	case "file":
+		return store.NewFileStore(cfg.Store.File.Dir), nil
+	case "git":
+		return store.NewGitStore(
+			cfg.Store.Git.RepoURL,
+			cfg.Store.Git.Branch,
+			cfg.Store.Git.LocalDir,
+			cfg.Store.Git.Username,
+			cfg.Store.Git.Password,
+			cfg.Store.Git.PollInterval,
+		)
+	default:
+		return nil, fmt.Errorf("unknown store mode: %q", cfg.Store.Mode)
+	}
 }
 
 func initLogger(c config.LoggingConfig) *zap.Logger {

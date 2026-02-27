@@ -3,9 +3,11 @@ package ldap
 import (
 	"fmt"
 	"strings"
+
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 )
 
-func parseConfig(raw map[string]any) (*config, *mapperConfig, error) {
+func parseConfig(raw map[string]manifest.ConfigValue) (*config, *mapperConfig, error) {
 	cfg := &config{
 		URL:           getString(raw, "url"),
 		BindDN:        getString(raw, "bindDN"),
@@ -27,7 +29,7 @@ func parseConfig(raw map[string]any) (*config, *mapperConfig, error) {
 	ensureAttribute(&cfg.GroupAttributes, "gidNumber")
 	ensureAttribute(&cfg.GroupAttributes, "cn")
 
-	if tlsRaw, ok := raw["tls"].(map[string]any); ok {
+	if tlsRaw, ok := raw["tls"].Value().(map[string]manifest.ConfigValue); ok {
 		cfg.TLSConfig = &tlsConfig{
 			Enabled:            getBool(tlsRaw, "enabled"),
 			InsecureSkipVerify: getBool(tlsRaw, "insecureSkipVerify"),
@@ -48,7 +50,7 @@ func ensureAttribute(list *[]string, attr string) {
 	*list = append(*list, attr)
 }
 
-func parseMapperConfig(c map[string]any) (*mapperConfig, error) {
+func parseMapperConfig(c map[string]manifest.ConfigValue) (*mapperConfig, error) {
 	return &mapperConfig{
 		UIDAttribute:              getString(c, "uidAttribute"),
 		UsernameAttribute:         getString(c, "usernameAttribute"),
@@ -63,25 +65,25 @@ func parseMapperConfig(c map[string]any) (*mapperConfig, error) {
 	}, nil
 }
 
-func getString(m map[string]any, k string) string {
-	v, _ := m[k].(string)
+func getString(m map[string]manifest.ConfigValue, k string) string {
+	v, _ := m[k].Value().(string)
 	return v
 }
 
-func getStringOrDefault(m map[string]any, k, d string) string {
-	if v, ok := m[k].(string); ok && v != "" {
+func getStringOrDefault(m map[string]manifest.ConfigValue, k, d string) string {
+	if v, ok := m[k].Value().(string); ok && v != "" {
 		return v
 	}
 	return d
 }
 
-func getBool(m map[string]any, k string) bool {
-	v, _ := m[k].(bool)
+func getBool(m map[string]manifest.ConfigValue, k string) bool {
+	v, _ := m[k].Value().(bool)
 	return v
 }
 
-func getStringSlice(m map[string]any, k string) []string {
-	if raw, ok := m[k].([]any); ok {
+func getStringSlice(m map[string]manifest.ConfigValue, k string) []string {
+	if raw, ok := m[k].Value().([]any); ok {
 		s := make([]string, 0, len(raw))
 		for _, v := range raw {
 			if str, ok := v.(string); ok {

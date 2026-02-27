@@ -3,12 +3,13 @@ package operator
 import (
 	"context"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 )
 
 type Operator interface {
 	Name() string
-	Initialize(ctx context.Context, config map[string]any) error
+	Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error
 	Sync(ctx context.Context, state *SyncState) error
 	PartialSync(ctx context.Context, state *PartialSyncState) error
 	Validate(ctx context.Context) error
