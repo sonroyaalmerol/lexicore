@@ -89,11 +89,65 @@ func (s *AuthentikSource) Connect(ctx context.Context) error {
 	return nil
 }
 
+func (s *AuthentikSource) fetchGroups(ctx context.Context) (map[string]source.Group, map[string][]string, error) {
+	s.mu.Lock()
+	client := s.client
+	config := s.config
+	s.mu.Unlock()
+
+	groups := make(map[string]source.Group)
+	childToParents := make(map[string][]string)
+	page := int32(1)
+
+	for {
+		req := client.CoreApi.CoreGroupsList(ctx).Page(page)
+		if config.PageSize > 0 {
+			req = req.PageSize(config.PageSize)
+		}
+
+		resp, _, err := req.Execute()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to fetch groups: %w", err)
+		}
+
+		for _, grp := range resp.Results {
+			groups[grp.Pk] = s.mapGroup(grp)
+			parents := grp.GetParents()
+			if len(parents) > 0 {
+				childToParents[grp.Pk] = parents
+			}
+		}
+
+		if resp.Pagination.Next <= 0 {
+			break
+		}
+		page = int32(resp.Pagination.Next)
+	}
+
+	return groups, childToParents, nil
+}
+
+func (s *AuthentikSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
+	groups, childToParents, err := s.fetchGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	flattenGroupMembers(groups, childToParents)
+
+	return groups, nil
+}
+
 func (s *AuthentikSource) GetIdentities(ctx context.Context) (map[string]source.Identity, error) {
 	s.mu.Lock()
 	client := s.client
 	config := s.config
 	s.mu.Unlock()
+
+	_, childToParents, err := s.fetchGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	identities := make(map[string]source.Identity)
 	page := int32(1)
@@ -119,40 +173,84 @@ func (s *AuthentikSource) GetIdentities(ctx context.Context) (map[string]source.
 		page = int32(resp.Pagination.Next)
 	}
 
+	flattenIdentityGroups(identities, childToParents)
+
 	return identities, nil
 }
 
-func (s *AuthentikSource) GetGroups(ctx context.Context) (map[string]source.Group, error) {
-	s.mu.Lock()
-	client := s.client
-	config := s.config
-	s.mu.Unlock()
-
-	groups := make(map[string]source.Group)
-	page := int32(1)
-
-	for {
-		req := client.CoreApi.CoreGroupsList(ctx).Page(page)
-		if config.PageSize > 0 {
-			req = req.PageSize(config.PageSize)
+func flattenGroupMembers(
+	groups map[string]source.Group,
+	childToParents map[string][]string,
+) {
+	var allAncestors func(gid string, visited map[string]struct{}) []string
+	allAncestors = func(gid string, visited map[string]struct{}) []string {
+		var result []string
+		for _, parentGID := range childToParents[gid] {
+			if _, seen := visited[parentGID]; seen {
+				continue
+			}
+			visited[parentGID] = struct{}{}
+			result = append(result, parentGID)
+			result = append(result, allAncestors(parentGID, visited)...)
 		}
-
-		resp, _, err := req.Execute()
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch groups: %w", err)
-		}
-
-		for _, grp := range resp.Results {
-			groups[grp.Pk] = s.mapGroup(grp)
-		}
-
-		if resp.Pagination.Next <= 0 {
-			break
-		}
-		page = int32(resp.Pagination.Next)
+		return result
 	}
 
-	return groups, nil
+	for gid, grp := range groups {
+		ancestors := allAncestors(gid, map[string]struct{}{gid: {}})
+
+		for _, ancestorGID := range ancestors {
+			ancestor, ok := groups[ancestorGID]
+			if !ok {
+				continue
+			}
+
+			existing := make(map[string]struct{}, len(ancestor.Members))
+			for _, m := range ancestor.Members {
+				existing[m] = struct{}{}
+			}
+
+			changed := false
+			for _, member := range grp.Members {
+				if _, dup := existing[member]; !dup {
+					ancestor.Members = append(ancestor.Members, member)
+					existing[member] = struct{}{}
+					changed = true
+				}
+			}
+
+			if changed {
+				groups[ancestorGID] = ancestor
+			}
+		}
+	}
+}
+
+func flattenIdentityGroups(
+	identities map[string]source.Identity,
+	childToParents map[string][]string,
+) {
+	for uid, identity := range identities {
+		allGroups := make(map[string]struct{})
+		queue := append([]string{}, identity.Groups...)
+
+		for len(queue) > 0 {
+			gid := queue[0]
+			queue = queue[1:]
+			if _, seen := allGroups[gid]; seen {
+				continue
+			}
+			allGroups[gid] = struct{}{}
+			queue = append(queue, childToParents[gid]...)
+		}
+
+		flat := make([]string, 0, len(allGroups))
+		for gid := range allGroups {
+			flat = append(flat, gid)
+		}
+		identity.Groups = flat
+		identities[uid] = identity
+	}
 }
 
 func (s *AuthentikSource) convertToString(v any) string {
