@@ -505,6 +505,15 @@ func (m *Manager) generateAuditReportIfNeeded(
 		return
 	}
 
+	counts := result.Counts()
+	if counts[string(operator.ActionUpdate)] == 0 {
+		m.logger.Info(
+			"Skipping audit report - no changes detected",
+			zap.String("target", targetName),
+		)
+		return
+	}
+
 	switch m.cfg.Audit.Mode {
 	case "email":
 		m.sendAuditEmail(targetName, result)
