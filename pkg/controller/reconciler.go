@@ -505,17 +505,26 @@ func (m *Manager) generateAuditReportIfNeeded(
 		return
 	}
 
-	if err := os.MkdirAll(m.cfg.Server.AuditsDir, 0755); err != nil {
+	switch m.cfg.Audit.Mode {
+	case "email":
+		m.sendAuditEmail(targetName, result)
+	default:
+		m.saveAuditFile(target, targetName, result)
+	}
+}
+
+func (m *Manager) saveAuditFile(
+	target *ActiveOperator,
+	targetName string,
+	result *operator.SyncResult,
+) {
+	if err := os.MkdirAll(m.cfg.Audit.XLSDir, 0755); err != nil {
 		m.logger.Error("Failed to create audit report directory", zap.Error(err))
 		return
 	}
 
-	filename := fmt.Sprintf(
-		"audit_log_%s_%d.xls",
-		targetName,
-		time.Now().Unix(),
-	)
-	fullPath := filepath.Join(m.cfg.Server.AuditsDir, filename)
+	filename := fmt.Sprintf("audit_log_%s_%d.xlsx", targetName, time.Now().Unix())
+	fullPath := filepath.Join(m.cfg.Audit.XLSDir, filename)
 	file, err := os.Create(fullPath)
 	if err != nil {
 		m.logger.Error("Failed to create audit report file", zap.Error(err))
@@ -526,4 +535,33 @@ func (m *Manager) generateAuditReportIfNeeded(
 	if err := operator.ExportToExcel(file, result.Entries()); err != nil {
 		m.logger.Error("Failed to write audit report", zap.Error(err))
 	}
+}
+
+func (m *Manager) sendAuditEmail(targetName string, result *operator.SyncResult) {
+	cfg := m.cfg.Audit.Email
+	sender := operator.NewEmailAuditSender(
+		cfg.SMTP.Host,
+		cfg.SMTP.Port,
+		cfg.SMTP.Username,
+		cfg.SMTP.Password,
+		cfg.SMTP.TLS,
+		cfg.From,
+		cfg.To,
+		cfg.SubjectFmt,
+	)
+
+	if err := sender.Send(targetName, result.Entries()); err != nil {
+		m.logger.Error(
+			"Failed to send audit report email",
+			zap.String("target", targetName),
+			zap.Error(err),
+		)
+		return
+	}
+
+	m.logger.Info(
+		"Audit report sent via email",
+		zap.String("target", targetName),
+		zap.Strings("to", cfg.To),
+	)
 }

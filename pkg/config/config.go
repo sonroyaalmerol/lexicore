@@ -15,6 +15,7 @@ type Config struct {
 	Store                 StoreConfig   `yaml:"store"`
 	DefaultSyncPeriod     time.Duration `yaml:"defaultSyncPeriod" envconfig:"DEFAULT_SYNC_PERIOD"`
 	Workers               WorkersConfig `yaml:"workers"`
+	Audit                 AuditConfig   `yaml:"audits"`
 	WebhookDebounceWindow time.Duration `yaml:"webhookDebounceWindow"`
 }
 
@@ -40,7 +41,6 @@ type GitConfig struct {
 type ServerConfig struct {
 	Address    string `yaml:"address" envconfig:"ADDRESS"`
 	PluginsDir string `yaml:"pluginsDir" envconfig:"PLUGINS_DIR"`
-	AuditsDir  string `yaml:"auditsDir" envconfig:"AUDITS_DIR"`
 }
 
 type LoggingConfig struct {
@@ -60,12 +60,32 @@ type WorkersConfig struct {
 	QueueSize        int `yaml:"queueSize" envconfig:"QUEUE_SIZE"`
 }
 
+type AuditConfig struct {
+	Mode   string     `yaml:"mode" envconfig:"AUDIT_MODE"`
+	XLSDir string     `yaml:"xlsDir" envconfig:"AUDIT_XLS_DIR"`
+	Email  AuditEmail `yaml:"email" envconfig:"AUDIT_EMAIL"`
+}
+
+type AuditEmail struct {
+	SMTP       SMTPConfig `yaml:"smtp"`
+	From       string     `yaml:"from" envconfig:"AUDIT_EMAIL_FROM"`
+	To         []string   `yaml:"to" envconfig:"AUDIT_EMAIL_TO"`
+	SubjectFmt string     `yaml:"subjectFmt" envconfig:"AUDIT_EMAIL_SUBJECT_FMT"`
+}
+
+type SMTPConfig struct {
+	Host     string `yaml:"host" envconfig:"SMTP_HOST"`
+	Port     int    `yaml:"port" envconfig:"SMTP_PORT"`
+	Username string `yaml:"username" envconfig:"SMTP_USERNAME"`
+	Password string `yaml:"password" envconfig:"SMTP_PASSWORD"`
+	TLS      bool   `yaml:"tls" envconfig:"SMTP_TLS"`
+}
+
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Address:    ":8080",
 			PluginsDir: "/var/lib/lexicore/plugins",
-			AuditsDir:  "/var/lib/lexicore/audits",
 		},
 		Logging: LoggingConfig{
 			Level:  "info",
@@ -92,6 +112,17 @@ func DefaultConfig() *Config {
 		Workers: WorkersConfig{
 			ReconcileWorkers: 4,
 			QueueSize:        100,
+		},
+		Audit: AuditConfig{
+			Mode:   "file",
+			XLSDir: "/var/lib/lexicore/audits",
+			Email: AuditEmail{
+				SubjectFmt: "Lexicore Audit Report — %s",
+				SMTP: SMTPConfig{
+					Port: 587,
+					TLS:  true,
+				},
+			},
 		},
 	}
 }
