@@ -186,8 +186,8 @@ const auditEmailTemplate = `<!DOCTYPE html>
 <div class="wrapper">
 
   <div class="header">
+    <div class="header-brand">Update Report</div>
     <div class="header-meta">
-      <strong>Audit Report</strong><br />
       Target: <strong>{{ .TargetName }}</strong><br />
       Generated: {{ .GeneratedAt }}
     </div>
