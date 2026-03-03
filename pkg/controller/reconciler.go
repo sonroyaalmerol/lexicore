@@ -544,7 +544,7 @@ func (m *Manager) sendAuditEmail(targetName string, result *operator.SyncResult)
 		cfg.SMTP.Port,
 		cfg.SMTP.Username,
 		cfg.SMTP.Password,
-		cfg.SMTP.TLS,
+		cfg.SMTP.TLSMode,
 		cfg.From,
 		cfg.To,
 		cfg.SubjectFmt,
