@@ -186,7 +186,6 @@ const auditEmailTemplate = `<!DOCTYPE html>
 <div class="wrapper">
 
   <div class="header">
-    <div class="header-brand">Lexi<span>core</span></div>
     <div class="header-meta">
       <strong>Audit Report</strong><br />
       Target: <strong>{{ .TargetName }}</strong><br />
