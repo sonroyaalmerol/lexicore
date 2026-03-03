@@ -46,6 +46,7 @@ func (o *IRedAdminOperator) Sync(
 	worker.wait()
 	return nil
 }
+
 func (o *IRedAdminOperator) PartialSync(
 	ctx context.Context,
 	state *operator.PartialSyncState,
@@ -114,8 +115,6 @@ func (o *IRedAdminOperator) syncUser(
 	dryRun bool,
 	result *operator.SyncResult,
 ) {
-	newUserData := o.identityToUser(id)
-
 	o.LogInfo("checking user %s (uid: %s)", id.Email, uid)
 
 	mu.Lock()
@@ -126,6 +125,16 @@ func (o *IRedAdminOperator) syncUser(
 		result.RecordError(operator.ActionSkip, uid, id.Username, fmt.Errorf("user not found"))
 		return
 	}
+
+	if id.Disabled {
+		if err := o.disableUser(ctx, uid, id, dryRun, result); err != nil {
+			o.LogError(fmt.Errorf("disable user %s (uid: %s): %w", id.Email, uid, err))
+			result.RecordError(operator.ActionUpdate, uid, id.Username, err)
+		}
+		return
+	}
+
+	newUserData := o.identityToUser(id)
 
 	userData, err := o.getUser(ctx, id.Email)
 	if err != nil {
@@ -152,9 +161,17 @@ func (o *IRedAdminOperator) partialSyncUser(
 		return
 	}
 
-	newUserData := o.identityToUser(id)
-
 	o.LogInfo("checking user %s (uid: %s) in partial sync", id.Email, uid)
+
+	if id.Disabled {
+		if err := o.disableUser(ctx, uid, id, dryRun, result); err != nil {
+			o.LogError(fmt.Errorf("disable user %s (uid: %s): %w", id.Email, uid, err))
+			result.RecordError(operator.ActionUpdate, uid, id.Username, err)
+		}
+		return
+	}
+
+	newUserData := o.identityToUser(id)
 
 	userData, err := o.getUser(ctx, id.Email)
 	if err != nil {

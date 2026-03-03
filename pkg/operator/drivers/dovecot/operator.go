@@ -49,7 +49,7 @@ func (o *DovecotOperator) Initialize(
 	apiKey, _ := o.GetStringConfig("apiKey")
 	o.b64Password = base64.URLEncoding.EncodeToString([]byte(apiKey))
 
-	anyone, hasAnyone := o.GetConfig("removeAnyoneACL")
+	anyone, hasAnyone := o.GetConfig("removeAnyoneACLs")
 	if hasAnyone {
 		var ok bool
 		o.removeAnyoneACL, ok = anyone.Value().(bool)

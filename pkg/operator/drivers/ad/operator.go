@@ -179,19 +179,28 @@ func (o *ADOperator) syncIdentity(
 		return
 	}
 
-	var currentMemberOf []string
 	if len(sr.Entries) == 0 {
 		o.LogError(fmt.Errorf("search failed for %s (uid: %s): user not found", enriched.Username, uid))
 		res.RecordError(operator.ActionSkip, uid, enriched.Username, err)
 		return
 	}
 
-	if err := o.updateUser(conn, res, desiredDN, *sr.Entries[0], enriched, dryRun); err != nil {
+	entry := sr.Entries[0]
+
+	if enriched.Disabled {
+		if err := o.disableUser(conn, res, entry, enriched, dryRun); err != nil {
+			o.LogError(fmt.Errorf("disable %s (uid: %s) failed: %w", enriched.Username, uid, err))
+			res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
+		}
+		return
+	}
+
+	if err := o.updateUser(conn, res, desiredDN, *entry, enriched, dryRun); err != nil {
 		o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
 		res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
 	}
-	currentMemberOf = sr.Entries[0].GetAttributeValues("memberOf")
 
+	currentMemberOf := entry.GetAttributeValues("memberOf")
 	if err := o.syncGroups(conn, res, desiredDN, currentMemberOf, enriched, dryRun); err != nil {
 		o.LogError(fmt.Errorf("group sync %s (uid: %s) failed: %w", enriched.Username, uid, err))
 		res.RecordError(operator.ActionUpdate, uid, enriched.Username, fmt.Errorf("group sync failed: %w", err))
@@ -215,7 +224,7 @@ func (o *ADOperator) getUserBaseDN(enriched source.Identity) (string, bool) {
 }
 
 func (o *ADOperator) buildAttributesList(enriched source.Identity) []string {
-	attributesToSearch := []string{"dn", "memberOf"}
+	attributesToSearch := []string{"dn", "memberOf", "userAccountControl"}
 	for k := range enriched.Attributes {
 		if k == "baseDN" || k == "dn" || k == "adGroups" {
 			continue

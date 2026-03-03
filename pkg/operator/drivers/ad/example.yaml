@@ -12,7 +12,6 @@ spec:
     bindPassword: "${AD_SERVICE_PASS}"
     searchBaseDN: "ou=Users,dc=example,dc=com"
     domain: "example.com"
-    defaultPassword: "ChangeMe123!" # Required for initial creation
   transformers:
     - name: ad-mapper
       type: template

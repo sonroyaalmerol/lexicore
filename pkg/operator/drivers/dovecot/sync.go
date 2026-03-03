@@ -18,6 +18,7 @@ type syncContext struct {
 	usersAffectedByMailbox *xsync.Map[string, map[string]struct{}]
 	userMailboxMap         *xsync.Map[string, []string]
 	expansionCache         *xsync.Map[string, []string]
+	disabledUsers          *xsync.Map[string, struct{}]
 	state                  *operator.SyncState
 }
 
@@ -79,6 +80,7 @@ func (o *DovecotOperator) Sync(
 		usersAffectedByMailbox: xsync.NewMap[string, map[string]struct{}](),
 		userMailboxMap:         xsync.NewMap[string, []string](),
 		expansionCache:         xsync.NewMap[string, []string](),
+		disabledUsers:          xsync.NewMap[string, struct{}](),
 		state:                  state,
 	}
 	defer func() {
@@ -87,6 +89,7 @@ func (o *DovecotOperator) Sync(
 		sc.mailboxDesiredACLs.Clear()
 		sc.usersAffectedByMailbox.Clear()
 		sc.userMailboxMap.Clear()
+		sc.disabledUsers.Clear()
 	}()
 
 	ctx = context.WithValue(ctx, syncContextKey{}, sc)
@@ -118,6 +121,38 @@ func (o *DovecotOperator) processIdentity(
 	identity source.Identity,
 ) {
 	sc := syncCtxFrom(ctx)
+
+	if identity.Disabled {
+		mailboxList, err := o.getAllNonPersonalMailbox(ctx, identity.Username)
+		if err != nil {
+			o.LogError(fmt.Errorf(
+				"disabled user %s (uid: %s) mailbox list failed: %w",
+				identity.Username, uid, err,
+			))
+			sc.state.Result.RecordError(
+				operator.ActionSkip, uid, identity.Username, err,
+			)
+			return
+		}
+
+		for _, fullMailbox := range mailboxList {
+			trimmed := strings.TrimPrefix(fullMailbox, "Other Users/")
+			sc.allMailboxes.Store(trimmed, struct{}{})
+			sc.disabledUsers.Store(identity.Username, struct{}{})
+
+			sc.usersAffectedByMailbox.Compute(
+				trimmed,
+				func(existing map[string]struct{}, loaded bool) (map[string]struct{}, xsync.ComputeOp) {
+					if !loaded {
+						existing = make(map[string]struct{})
+					}
+					existing[uid] = struct{}{}
+					return existing, xsync.UpdateOp
+				},
+			)
+		}
+		return
+	}
 
 	if aclsAny, ok := identity.Attributes["acls"]; ok {
 		if aclsArr, isArr := aclsAny.([]any); isArr {
@@ -252,6 +287,12 @@ func (o *DovecotOperator) applyACLChanges(ctx context.Context) error {
 			desiredForMailbox := make(map[string][]string)
 			if desired, exists := sc.mailboxDesiredACLs.Load(mailboxKey); exists {
 				desiredForMailbox = desired
+			}
+
+			for username := range desiredForMailbox {
+				if _, disabled := sc.disabledUsers.Load(username); disabled {
+					delete(desiredForMailbox, username)
+				}
 			}
 
 			diff := o.calculateDiff(

@@ -2,59 +2,68 @@ package ad
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/utils"
 	"github.com/go-ldap/ldap/v3"
-	"golang.org/x/text/encoding/unicode"
 )
 
-func (o *ADOperator) createUser(conn *ldap.Conn, dn string, id source.Identity) error {
-	domain, _ := o.GetStringConfig("domain")
+const (
+	uacNormalAccount  = 0x0200 // 512
+	uacAccountDisable = 0x0002 // 2
+)
 
-	addReq := ldap.NewAddRequest(dn, nil)
-	addReq.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user"})
-	addReq.Attribute("sAMAccountName", []string{id.Username})
+func isDisabled(uac int) bool {
+	return uac&uacAccountDisable != 0
+}
 
-	var upnBuilder strings.Builder
-	upnBuilder.Grow(len(id.Username) + len(domain) + 1)
-	upnBuilder.WriteString(id.Username)
-	upnBuilder.WriteByte('@')
-	upnBuilder.WriteString(domain)
-	addReq.Attribute("userPrincipalName", []string{upnBuilder.String()})
-	addReq.Attribute("pwdLastSet", []string{"0"})
+func setDisabled(uac int, disabled bool) int {
+	if disabled {
+		return uac | uacAccountDisable
+	}
+	return uac &^ uacAccountDisable
+}
 
-	if id.DisplayName != "" {
-		addReq.Attribute("displayName", []string{id.DisplayName})
+func (o *ADOperator) disableUser(
+	conn *ldap.Conn,
+	res *operator.SyncResult,
+	entry *ldap.Entry,
+	id source.Identity,
+	dryRun bool,
+) error {
+	currentStr := entry.GetAttributeValue("userAccountControl")
+	currentUAC, err := strconv.Atoi(currentStr)
+	if err != nil {
+		return fmt.Errorf("invalid userAccountControl value %q: %w", currentStr, err)
 	}
 
-	for k, v := range id.Attributes {
-		addReq.Attribute(k, []string{fmt.Sprintf("%v", v)})
+	if isDisabled(currentUAC) {
+		return nil
 	}
 
-	if err := conn.Add(addReq); err != nil {
-		return err
-	}
+	newUAC := setDisabled(currentUAC, true)
+	newStr := strconv.Itoa(newUAC)
 
-	if initPass, ok := o.GetTemplatedStringConfig("defaultPassword", id.Attributes); ok == nil {
-		if err := o.setPassword(conn, dn, initPass); err != nil {
-			return err
+	if dryRun {
+		o.LogInfo(
+			"[DRY RUN] Would disable user %s (userAccountControl: %s -> %s)",
+			id.Username, currentStr, newStr,
+		)
+	} else {
+		modReq := ldap.NewModifyRequest(entry.DN, nil)
+		modReq.Replace("userAccountControl", []string{newStr})
+		if err := conn.Modify(modReq); err != nil {
+			return fmt.Errorf("error disabling user %s: %w", id.Username, err)
 		}
 	}
 
-	return nil
-}
-
-func (o *ADOperator) setPassword(conn *ldap.Conn, dn, password string) error {
-	utf16 := unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM)
-	pwdEncoded, _ := utf16.NewEncoder().String(fmt.Sprintf("\"%s\"", password))
-	passReq := ldap.NewModifyRequest(dn, []ldap.Control{})
-	passReq.Replace("unicodePwd", []string{pwdEncoded})
-	if err := conn.Modify(passReq); err != nil {
-		return fmt.Errorf("error setting user password: %v\n", err)
-	}
+	res.Record(
+		operator.ActionUpdate, id.UID, id.Username,
+		operator.AttrChange("userAccountControl", currentStr, newStr),
+	)
 	return nil
 }
 
