@@ -26,6 +26,7 @@ type Group struct {
 	GID         string
 	Name        string
 	Members     []string
+	Parents     []string
 	Attributes  map[string]any
 	Description string
 }
@@ -48,6 +49,9 @@ func (g Group) DeepCopy() Group {
 	clone.Members = make([]string, len(g.Members))
 	copy(clone.Members, g.Members)
 
+	clone.Parents = make([]string, len(g.Parents))
+	copy(clone.Parents, g.Parents)
+
 	clone.Attributes = make(map[string]any, len(g.Attributes))
 	maps.Copy(clone.Attributes, g.Attributes)
 
@@ -58,24 +62,13 @@ type Source interface {
 	Name() string
 	Initialize(ctx context.Context, config map[string]manifest.ConfigValue) error
 	Validate(ctx context.Context) error
-
-	// Connect establishes connection to the source
 	Connect(ctx context.Context) error
-
-	// GetIdentities fetches all identities
 	GetIdentities(ctx context.Context) (map[string]Identity, error)
-
-	// GetGroups fetches all groups
 	GetGroups(ctx context.Context) (map[string]Group, error)
-
-	// Close closes the connection
 	Close() error
 }
 
 type PartialFetchCapable interface {
-	// GetIdentitiesByUIDs fetches specific identities by UID
 	GetIdentitiesByUIDs(ctx context.Context, uids []string) (map[string]Identity, error)
-
-	// GetGroupsByGIDs fetches specific groups by GID
 	GetGroupsByGIDs(ctx context.Context, gids []string) (map[string]Group, error)
 }

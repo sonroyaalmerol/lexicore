@@ -22,6 +22,7 @@ type mapperConfig struct {
 	GroupNameAttribute        string
 	GroupMembersAttribute     string
 	GroupDescriptionAttribute string
+	GroupParentsAttribute     string
 
 	ExtractDomainFromDN bool
 }
@@ -59,6 +60,9 @@ func setDefaults(c *mapperConfig) {
 	if c.GroupDescriptionAttribute == "" {
 		c.GroupDescriptionAttribute = "description"
 	}
+	if c.GroupParentsAttribute == "" {
+		c.GroupParentsAttribute = "memberOf"
+	}
 }
 
 func (m *mapper) mapIdentity(entry *ldap.Entry) source.Identity {
@@ -95,11 +99,18 @@ func (m *mapper) mapIdentity(entry *ldap.Entry) source.Identity {
 }
 
 func (m *mapper) mapGroup(entry *ldap.Entry) source.Group {
+	rawParents := entry.GetAttributeValues(m.config.GroupParentsAttribute)
+	parents := make([]string, 0, len(rawParents))
+	for _, p := range rawParents {
+		parents = append(parents, m.extractCNFromDN(p))
+	}
+
 	group := source.Group{
 		GID:         entry.GetAttributeValue(m.config.GIDAttribute),
 		Name:        entry.GetAttributeValue(m.config.GroupNameAttribute),
 		Description: entry.GetAttributeValue(m.config.GroupDescriptionAttribute),
 		Members:     entry.GetAttributeValues(m.config.GroupMembersAttribute),
+		Parents:     parents,
 		Attributes:  make(map[string]any),
 	}
 

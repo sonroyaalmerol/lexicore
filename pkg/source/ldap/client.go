@@ -23,8 +23,8 @@ type config struct {
 	TLSConfig       *tlsConfig
 
 	EnableChangeDetection bool
-	ModifyTimestampAttr   string // e.g., "modifyTimestamp"
-	CreateTimestampAttr   string // e.g., "createTimestamp"
+	ModifyTimestampAttr   string
+	CreateTimestampAttr   string
 }
 
 type tlsConfig struct {
@@ -169,7 +169,30 @@ func (l *LDAPSource) GetGroups(ctx context.Context) (map[string]source.Group, er
 		groups[key] = group
 	}
 
+	resolveParents(groups)
+
 	return groups, nil
+}
+
+func resolveParents(groups map[string]source.Group) {
+	nameToKey := make(map[string]string, len(groups))
+	for key, g := range groups {
+		nameToKey[g.Name] = key
+	}
+
+	for key, g := range groups {
+		seen := make(map[string]struct{})
+		for _, member := range g.Members {
+			if childKey, ok := nameToKey[member]; ok {
+				child := groups[childKey]
+				if _, already := seen[key]; !already {
+					child.Parents = append(child.Parents, g.Name)
+					seen[key] = struct{}{}
+					groups[childKey] = child
+				}
+			}
+		}
+	}
 }
 
 func (l *LDAPSource) Close() error {

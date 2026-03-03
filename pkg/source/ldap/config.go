@@ -28,6 +28,7 @@ func parseConfig(raw map[string]manifest.ConfigValue) (*config, *mapperConfig, e
 	ensureAttribute(&cfg.UserAttributes, "cn")
 	ensureAttribute(&cfg.GroupAttributes, "gidNumber")
 	ensureAttribute(&cfg.GroupAttributes, "cn")
+	ensureAttribute(&cfg.GroupAttributes, "memberOf")
 
 	if tlsRaw, ok := raw["tls"].Value().(map[string]manifest.ConfigValue); ok {
 		cfg.TLSConfig = &tlsConfig{
@@ -61,6 +62,7 @@ func parseMapperConfig(c map[string]manifest.ConfigValue) (*mapperConfig, error)
 		GroupNameAttribute:        getString(c, "groupNameAttribute"),
 		GroupMembersAttribute:     getString(c, "groupMembersAttribute"),
 		GroupDescriptionAttribute: getString(c, "groupDescriptionAttribute"),
+		GroupParentsAttribute:     getString(c, "groupParentsAttribute"),
 		ExtractDomainFromDN:       getBool(c, "extractDomainFromDN"),
 	}, nil
 }

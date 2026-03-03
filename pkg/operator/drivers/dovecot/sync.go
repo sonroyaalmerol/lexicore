@@ -8,6 +8,7 @@ import (
 
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
+	"codeberg.org/lexicore/lexicore/pkg/utils"
 	"github.com/puzpuzpuz/xsync/v4"
 )
 
@@ -157,7 +158,11 @@ func (o *DovecotOperator) processIdentity(
 								if !loaded {
 									existing = make(map[string][]string)
 								}
-								existing[identity.Username] = acl.RightsSlice()
+								if prev, ok := existing[identity.Username]; ok {
+									existing[identity.Username] = utils.ConcatUnique(prev, acl.RightsSlice())
+								} else {
+									existing[identity.Username] = acl.RightsSlice()
+								}
 								return existing, xsync.UpdateOp
 							},
 						)

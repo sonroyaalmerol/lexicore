@@ -8,14 +8,14 @@ import (
 )
 
 func TestMapper_mapIdentity(t *testing.T) {
-	config := &mapperConfig{
+	cfg := &mapperConfig{
 		UIDAttribute:      "uid",
 		UsernameAttribute: "cn",
 		EmailAttribute:    "mail",
 		GroupsAttribute:   "memberOf",
 	}
 
-	mapper := newMapper(config)
+	m := newMapper(cfg)
 
 	entry := ldap.NewEntry(
 		"cn=john,ou=users,dc=example,dc=com",
@@ -27,7 +27,7 @@ func TestMapper_mapIdentity(t *testing.T) {
 		},
 	)
 
-	identity := mapper.mapIdentity(entry)
+	identity := m.mapIdentity(entry)
 
 	assert.Equal(t, "john123", identity.UID)
 	assert.Equal(t, "john", identity.Username)
@@ -36,9 +36,40 @@ func TestMapper_mapIdentity(t *testing.T) {
 	assert.Equal(t, "cn=john,ou=users,dc=example,dc=com", identity.Attributes["dn"])
 }
 
+func TestMapper_mapGroup(t *testing.T) {
+	cfg := &mapperConfig{
+		GIDAttribute:              "gidNumber",
+		GroupNameAttribute:        "cn",
+		GroupMembersAttribute:     "member",
+		GroupDescriptionAttribute: "description",
+		GroupParentsAttribute:     "memberOf",
+	}
+
+	m := newMapper(cfg)
+
+	entry := ldap.NewEntry(
+		"cn=admins,ou=groups,dc=example,dc=com",
+		map[string][]string{
+			"gidNumber":   {"1001"},
+			"cn":          {"admins"},
+			"description": {"Administrators"},
+			"member":      {"cn=john,ou=users,dc=example,dc=com"},
+			"memberOf":    {"cn=superadmins,ou=groups,dc=example,dc=com"},
+		},
+	)
+
+	group := m.mapGroup(entry)
+
+	assert.Equal(t, "1001", group.GID)
+	assert.Equal(t, "admins", group.Name)
+	assert.Equal(t, "Administrators", group.Description)
+	assert.Contains(t, group.Members, "john")
+	assert.Contains(t, group.Parents, "superadmins")
+	assert.Equal(t, "cn=admins,ou=groups,dc=example,dc=com", group.Attributes["dn"])
+}
+
 func TestMapper_ExtractCNFromDN(t *testing.T) {
-	config := &mapperConfig{}
-	mapper := newMapper(config)
+	m := newMapper(&mapperConfig{})
 
 	tests := []struct {
 		name string
@@ -69,15 +100,14 @@ func TestMapper_ExtractCNFromDN(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := mapper.extractCNFromDN(tt.dn)
+			result := m.extractCNFromDN(tt.dn)
 			assert.Equal(t, tt.want, result)
 		})
 	}
 }
 
 func TestMapper_ExtractDomainFromDN(t *testing.T) {
-	config := &mapperConfig{}
-	mapper := newMapper(config)
+	m := newMapper(&mapperConfig{})
 
 	tests := []struct {
 		name string
@@ -108,7 +138,7 @@ func TestMapper_ExtractDomainFromDN(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := mapper.extractDomainFromDN(tt.dn)
+			result := m.extractDomainFromDN(tt.dn)
 			assert.Equal(t, tt.want, result)
 		})
 	}

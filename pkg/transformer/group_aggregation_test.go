@@ -627,3 +627,168 @@ func TestGroupAggregationTransformer_InvalidAggregationMode(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid aggregation mode")
 }
+
+func TestGroupAggregationTransformer_IncludeParents(t *testing.T) {
+	config := map[string]manifest.ConfigValue{
+		"includeParents": cv(true),
+		"mappings": cv([]any{
+			map[string]any{
+				"sourceAttribute": "role",
+				"targetAttribute": "roles",
+				"aggregationMode": "uniqueAppend",
+			},
+		}),
+	}
+
+	gat, err := NewGroupAggregationTransformer(config)
+	require.NoError(t, err)
+
+	groups := map[string]source.Group{
+		"child": {
+			GID:     "child",
+			Name:    "child",
+			Parents: []string{"parent"},
+			Attributes: map[string]any{
+				"role": "viewer",
+			},
+		},
+		"parent": {
+			GID:     "parent",
+			Name:    "parent",
+			Parents: []string{"grandparent"},
+			Attributes: map[string]any{
+				"role": "editor",
+			},
+		},
+		"grandparent": {
+			GID:  "grandparent",
+			Name: "grandparent",
+			Attributes: map[string]any{
+				"role": "admin",
+			},
+		},
+	}
+
+	identities := map[string]source.Identity{
+		"user1": {
+			UID:        "user1",
+			Username:   "user1",
+			Groups:     []string{"child"},
+			Attributes: make(map[string]any),
+		},
+	}
+
+	ctx := NewContext(context.Background(), nil)
+	result, _, err := gat.Transform(ctx, identities, groups)
+
+	require.NoError(t, err)
+	roles := result["user1"].Attributes["roles"].([]any)
+	assert.Len(t, roles, 3)
+	assert.Contains(t, roles, "viewer")
+	assert.Contains(t, roles, "editor")
+	assert.Contains(t, roles, "admin")
+}
+
+func TestGroupAggregationTransformer_IncludeParents_CycleGuard(t *testing.T) {
+	config := map[string]manifest.ConfigValue{
+		"includeParents": cv(true),
+		"mappings": cv([]any{
+			map[string]any{
+				"sourceAttribute": "role",
+				"targetAttribute": "roles",
+				"aggregationMode": "uniqueAppend",
+			},
+		}),
+	}
+
+	gat, err := NewGroupAggregationTransformer(config)
+	require.NoError(t, err)
+
+	groups := map[string]source.Group{
+		"a": {
+			GID:     "a",
+			Name:    "a",
+			Parents: []string{"b"},
+			Attributes: map[string]any{
+				"role": "roleA",
+			},
+		},
+		"b": {
+			GID:     "b",
+			Name:    "b",
+			Parents: []string{"a"},
+			Attributes: map[string]any{
+				"role": "roleB",
+			},
+		},
+	}
+
+	identities := map[string]source.Identity{
+		"user1": {
+			UID:        "user1",
+			Username:   "user1",
+			Groups:     []string{"a"},
+			Attributes: make(map[string]any),
+		},
+	}
+
+	ctx := NewContext(context.Background(), nil)
+	result, _, err := gat.Transform(ctx, identities, groups)
+
+	require.NoError(t, err)
+	roles := result["user1"].Attributes["roles"].([]any)
+	assert.Len(t, roles, 2)
+	assert.Contains(t, roles, "roleA")
+	assert.Contains(t, roles, "roleB")
+}
+
+func TestGroupAggregationTransformer_IncludeParents_Disabled(t *testing.T) {
+	config := map[string]manifest.ConfigValue{
+		"mappings": cv([]any{
+			map[string]any{
+				"sourceAttribute": "role",
+				"targetAttribute": "roles",
+				"aggregationMode": "uniqueAppend",
+			},
+		}),
+	}
+
+	gat, err := NewGroupAggregationTransformer(config)
+	require.NoError(t, err)
+
+	groups := map[string]source.Group{
+		"child": {
+			GID:     "child",
+			Name:    "child",
+			Parents: []string{"parent"},
+			Attributes: map[string]any{
+				"role": "viewer",
+			},
+		},
+		"parent": {
+			GID:  "parent",
+			Name: "parent",
+			Attributes: map[string]any{
+				"role": "admin",
+			},
+		},
+	}
+
+	identities := map[string]source.Identity{
+		"user1": {
+			UID:        "user1",
+			Username:   "user1",
+			Groups:     []string{"child"},
+			Attributes: make(map[string]any),
+		},
+	}
+
+	ctx := NewContext(context.Background(), nil)
+	result, _, err := gat.Transform(ctx, identities, groups)
+
+	require.NoError(t, err)
+	roles := result["user1"].Attributes["roles"].([]any)
+	assert.Len(t, roles, 1)
+	assert.Contains(t, roles, "viewer")
+	assert.NotContains(t, roles, "admin")
+}

@@ -12,7 +12,8 @@ import (
 )
 
 type GroupAggregationTransformer struct {
-	mappings []GroupAggregationMapping
+	mappings       []GroupAggregationMapping
+	includeParents bool
 }
 
 type GroupAggregationMapping struct {
@@ -24,9 +25,19 @@ type GroupAggregationMapping struct {
 }
 
 func NewGroupAggregationTransformer(config map[string]manifest.ConfigValue) (*GroupAggregationTransformer, error) {
+	includeParents := false
+	if v, ok := config["includeParents"]; ok {
+		if b, ok := v.Value().(bool); ok {
+			includeParents = b
+		}
+	}
+
 	mappingsRaw, ok := config["mappings"]
 	if !ok {
-		return &GroupAggregationTransformer{mappings: []GroupAggregationMapping{}}, nil
+		return &GroupAggregationTransformer{
+			mappings:       []GroupAggregationMapping{},
+			includeParents: includeParents,
+		}, nil
 	}
 
 	var mappings []GroupAggregationMapping
@@ -68,7 +79,10 @@ func NewGroupAggregationTransformer(config map[string]manifest.ConfigValue) (*Gr
 		return nil, fmt.Errorf("invalid mappings configuration")
 	}
 
-	return &GroupAggregationTransformer{mappings: mappings}, nil
+	return &GroupAggregationTransformer{
+		mappings:       mappings,
+		includeParents: includeParents,
+	}, nil
 }
 
 func (t *GroupAggregationTransformer) Transform(
@@ -92,22 +106,60 @@ func (t *GroupAggregationTransformer) Transform(
 			continue
 		}
 
-		groups := make([]source.Group, 0, len(identity.Groups))
-		for _, group := range identity.Groups {
-			if foundGroup, ok := allGroups[group]; ok {
-				groups = append(groups, foundGroup)
-			}
-		}
+		groups := t.resolveGroups(identity.Groups, allGroups)
 
 		for _, mapping := range t.mappings {
-			source := identity.Attributes[mapping.SourceAttribute]
-			identity.Attributes[mapping.TargetAttribute] = t.applyMapping(source, groups, mapping)
+			src := identity.Attributes[mapping.SourceAttribute]
+			identity.Attributes[mapping.TargetAttribute] = t.applyMapping(src, groups, mapping)
 		}
 
 		identities[key] = identity
 	}
 
 	return identities, allGroups, nil
+}
+
+func (t *GroupAggregationTransformer) resolveGroups(
+	groupNames []string,
+	allGroups map[string]source.Group,
+) []source.Group {
+	if !t.includeParents {
+		groups := make([]source.Group, 0, len(groupNames))
+		for _, name := range groupNames {
+			if g, ok := allGroups[name]; ok {
+				groups = append(groups, g)
+			}
+		}
+		return groups
+	}
+
+	seen := make(map[string]struct{})
+	var result []source.Group
+
+	var walk func(name string)
+	walk = func(name string) {
+		if _, visited := seen[name]; visited {
+			return
+		}
+		seen[name] = struct{}{}
+
+		g, ok := allGroups[name]
+		if !ok {
+			return
+		}
+
+		result = append(result, g)
+
+		for _, parent := range g.Parents {
+			walk(parent)
+		}
+	}
+
+	for _, name := range groupNames {
+		walk(name)
+	}
+
+	return result
 }
 
 func (t *GroupAggregationTransformer) applyMapping(
