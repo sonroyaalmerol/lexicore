@@ -74,11 +74,14 @@ type AuditEmail struct {
 }
 
 type SMTPConfig struct {
-	Host     string `yaml:"host" envconfig:"SMTP_HOST"`
-	Port     int    `yaml:"port" envconfig:"SMTP_PORT"`
+	Host     string `yaml:"host"     envconfig:"SMTP_HOST"`
+	Port     int    `yaml:"port"     envconfig:"SMTP_PORT"`
 	Username string `yaml:"username" envconfig:"SMTP_USERNAME"`
 	Password string `yaml:"password" envconfig:"SMTP_PASSWORD"`
-	TLS      bool   `yaml:"tls" envconfig:"SMTP_TLS"`
+	// TLSMode: "none" | "starttls" | "tls"
+	// starttls = STARTTLS on plain connection (port 587)
+	// tls      = implicit TLS from the start   (port 465)
+	TLSMode string `yaml:"tlsMode" envconfig:"SMTP_TLS_MODE"`
 }
 
 func DefaultConfig() *Config {
@@ -119,8 +122,8 @@ func DefaultConfig() *Config {
 			Email: AuditEmail{
 				SubjectFmt: "Lexicore Audit Report — %s",
 				SMTP: SMTPConfig{
-					Port: 587,
-					TLS:  true,
+					Port:    587,
+					TLSMode: "starttls",
 				},
 			},
 		},

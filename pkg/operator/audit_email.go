@@ -327,7 +327,7 @@ type EmailAuditSender struct {
 	port       int
 	username   string
 	password   string
-	tlsEnabled bool
+	tlsMode    string
 	from       string
 	to         []string
 	subjectFmt string
@@ -337,7 +337,7 @@ func NewEmailAuditSender(
 	host string,
 	port int,
 	username, password string,
-	tlsEnabled bool,
+	tlsMode string,
 	from string,
 	to []string,
 	subjectFmt string,
@@ -350,7 +350,7 @@ func NewEmailAuditSender(
 		port:       port,
 		username:   username,
 		password:   password,
-		tlsEnabled: tlsEnabled,
+		tlsMode:    tlsMode,
 		from:       from,
 		to:         to,
 		subjectFmt: subjectFmt,
@@ -441,27 +441,53 @@ func (s *EmailAuditSender) auth() smtp.Auth {
 }
 
 func (s *EmailAuditSender) send(addr string, msg []byte) error {
-	if !s.tlsEnabled {
+	switch s.tlsMode {
+	case "tls":
+		return s.sendImplicitTLS(addr, msg)
+	case "starttls":
+		return s.sendSTARTTLS(addr, msg)
+	default:
 		return smtp.SendMail(addr, s.auth(), s.from, s.to, msg)
 	}
-	tlsCfg := &tls.Config{ServerName: s.host}
-	conn, err := tls.Dial("tcp", addr, tlsCfg)
+}
+
+func (s *EmailAuditSender) sendImplicitTLS(addr string, msg []byte) error {
+	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: s.host})
 	if err != nil {
 		return fmt.Errorf("tls dial: %w", err)
 	}
+	return s.sendWithClient(conn, msg)
+}
 
+func (s *EmailAuditSender) sendSTARTTLS(addr string, msg []byte) error {
+	client, err := smtp.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("smtp dial: %w", err)
+	}
+	defer client.Close()
+
+	if err := client.StartTLS(&tls.Config{ServerName: s.host}); err != nil {
+		return fmt.Errorf("starttls: %w", err)
+	}
+
+	return s.finishSend(client, msg)
+}
+
+func (s *EmailAuditSender) sendWithClient(conn *tls.Conn, msg []byte) error {
 	client, err := smtp.NewClient(conn, s.host)
 	if err != nil {
 		return fmt.Errorf("smtp client: %w", err)
 	}
 	defer client.Close()
+	return s.finishSend(client, msg)
+}
 
+func (s *EmailAuditSender) finishSend(client *smtp.Client, msg []byte) error {
 	if a := s.auth(); a != nil {
 		if err := client.Auth(a); err != nil {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
 	}
-
 	if err := client.Mail(s.from); err != nil {
 		return fmt.Errorf("smtp MAIL: %w", err)
 	}
@@ -470,7 +496,6 @@ func (s *EmailAuditSender) send(addr string, msg []byte) error {
 			return fmt.Errorf("smtp RCPT %s: %w", rcpt, err)
 		}
 	}
-
 	w, err := client.Data()
 	if err != nil {
 		return fmt.Errorf("smtp DATA: %w", err)
