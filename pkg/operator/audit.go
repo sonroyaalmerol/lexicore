@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type Action string
@@ -67,12 +69,14 @@ func (e AuditEntry) MarshalJSON() ([]byte, error) {
 type SyncResult struct {
 	mu      sync.Mutex
 	target  string
+	logger  *zap.Logger
 	entries []AuditEntry
 }
 
-func NewSyncResult(target string) *SyncResult {
+func NewSyncResult(logger *zap.Logger, target string) *SyncResult {
 	return &SyncResult{
 		target: target,
+		logger: logger,
 	}
 }
 
@@ -104,6 +108,27 @@ func (r *SyncResult) append(entry AuditEntry) {
 	r.mu.Lock()
 	r.entries = append(r.entries, entry)
 	r.mu.Unlock()
+
+	fields := []zap.Field{
+		zap.String("audit", "true"),
+		zap.Time("timestamp", entry.Timestamp),
+		zap.String("action", string(entry.Action)),
+		zap.String("target", entry.Target),
+		zap.String("uid", entry.UID),
+		zap.String("name", entry.Name),
+	}
+
+	if entry.Error != nil {
+		fields = append(fields, zap.Error(entry.Error))
+		r.logger.Error("audit event", fields...)
+		return
+	}
+
+	if len(entry.Changes) > 0 {
+		fields = append(fields, zap.Any("changes", entry.Changes))
+	}
+
+	r.logger.Info("audit event", fields...)
 }
 
 func (r *SyncResult) Entries() []AuditEntry {

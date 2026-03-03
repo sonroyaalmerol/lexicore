@@ -462,7 +462,7 @@ func (m *Manager) syncToTarget(
 	isPartial bool,
 	partialParams ...[]string,
 ) (*operator.SyncResult, error) {
-	auditor := operator.NewSyncResult(target.Name())
+	auditor := operator.NewSyncResult(m.logger, target.Name())
 
 	if isPartial && len(partialParams) == 2 {
 		state := &operator.PartialSyncState{
