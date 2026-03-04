@@ -126,7 +126,8 @@ func (o *IRedAdminOperator) syncUser(
 		return
 	}
 
-	if id.Disabled {
+	disabled, _ := id.Attributes["disabled"].(bool)
+	if disabled || id.Disabled {
 		if err := o.disableUser(ctx, uid, id, dryRun, result); err != nil {
 			o.LogError(fmt.Errorf("disable user %s (uid: %s): %w", id.Email, uid, err))
 			result.RecordError(operator.ActionUpdate, uid, id.Username, err)

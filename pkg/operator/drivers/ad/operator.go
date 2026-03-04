@@ -187,7 +187,8 @@ func (o *ADOperator) syncIdentity(
 
 	entry := sr.Entries[0]
 
-	if enriched.Disabled {
+	disabled, _ := enriched.Attributes["disabled"].(bool)
+	if disabled || enriched.Disabled {
 		if err := o.disableUser(conn, res, entry, enriched, dryRun); err != nil {
 			o.LogError(fmt.Errorf("disable %s (uid: %s) failed: %w", enriched.Username, uid, err))
 			res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
