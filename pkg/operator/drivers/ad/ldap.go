@@ -12,8 +12,7 @@ import (
 )
 
 const (
-	uacNormalAccount  = 0x0200 // 512
-	uacAccountDisable = 0x0002 // 2
+	uacAccountDisable = 0x0002
 )
 
 func isDisabled(uac int) bool {
@@ -25,6 +24,46 @@ func setDisabled(uac int, disabled bool) int {
 		return uac | uacAccountDisable
 	}
 	return uac &^ uacAccountDisable
+}
+
+func (o *ADOperator) enableUser(
+	conn *ldap.Conn,
+	res *operator.SyncResult,
+	entry *ldap.Entry,
+	id source.Identity,
+	dryRun bool,
+) error {
+	currentStr := entry.GetAttributeValue("userAccountControl")
+	currentUAC, err := strconv.Atoi(currentStr)
+	if err != nil {
+		return fmt.Errorf("invalid userAccountControl value %q: %w", currentStr, err)
+	}
+
+	if !isDisabled(currentUAC) {
+		return nil
+	}
+
+	newUAC := setDisabled(currentUAC, false)
+	newStr := strconv.Itoa(newUAC)
+
+	if dryRun {
+		o.LogInfo(
+			"[DRY RUN] Would enable user %s (userAccountControl: %s -> %s)",
+			id.Username, currentStr, newStr,
+		)
+	} else {
+		modReq := ldap.NewModifyRequest(entry.DN, nil)
+		modReq.Replace("userAccountControl", []string{newStr})
+		if err := conn.Modify(modReq); err != nil {
+			return fmt.Errorf("error enabling user %s: %w", id.Username, err)
+		}
+	}
+
+	res.Record(
+		operator.ActionUpdate, id.UID, id.Username,
+		operator.AttrChange("userAccountControl", currentStr, newStr),
+	)
+	return nil
 }
 
 func (o *ADOperator) disableUser(

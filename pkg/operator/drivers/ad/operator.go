@@ -195,6 +195,12 @@ func (o *ADOperator) syncIdentity(
 		return
 	}
 
+	if err := o.enableUser(conn, res, entry, enriched, dryRun); err != nil {
+		o.LogError(fmt.Errorf("enable %s (uid: %s) failed: %w", enriched.Username, uid, err))
+		res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
+		return
+	}
+
 	if err := o.updateUser(conn, res, desiredDN, *entry, enriched, dryRun); err != nil {
 		o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
 		res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
