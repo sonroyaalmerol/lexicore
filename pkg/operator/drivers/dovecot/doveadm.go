@@ -230,12 +230,13 @@ func (o *DovecotOperator) setMailboxACL(
 	username string,
 	rights []string,
 ) error {
+	marshalledRights, _ := json.Marshal(rights)
 	_, err := o.doveadmExec(ctx, []DoveadmRequest{
 		{"aclSet", map[string]string{
 			"user":    sharedFolder,
 			"mailbox": mailboxPath,
 			"id":      fmt.Sprintf("user=%s@%s", username, o.domain),
-			"rights":  strings.Join(rights, " "),
+			"right":   string(marshalledRights),
 		}, ""},
 	})
 	return err
