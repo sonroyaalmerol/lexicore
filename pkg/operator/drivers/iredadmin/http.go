@@ -210,6 +210,42 @@ func (o *IRedAdminOperator) getUser(ctx context.Context, email string) (UserData
 	return resp.Data, nil
 }
 
+func (o *IRedAdminOperator) enableUser(
+	ctx context.Context,
+	uid string,
+	id source.Identity,
+	dryRun bool,
+	result *operator.SyncResult,
+) error {
+	userData, err := o.getUser(ctx, id.Email)
+	if err != nil {
+		return fmt.Errorf("failed to get user data: %w", err)
+	}
+
+	currentStatus := getStringFromArray(userData.AccountStatus)
+	if currentStatus == "active" {
+		return nil
+	}
+
+	if dryRun {
+		o.LogInfo("[DRY RUN] Would enable user %s (uid: %s)", id.Email, uid)
+	} else {
+		data := url.Values{}
+		data.Set("accountStatus", "active")
+
+		path := fmt.Sprintf("%s/api/user/%s", o.baseURL, url.PathEscape(id.Email))
+		if err := o.doRequest(ctx, "PUT", path, data); err != nil {
+			return err
+		}
+	}
+
+	result.Record(
+		operator.ActionUpdate, uid, id.Username,
+		operator.AttrChange(AttributeStatus, currentStatus, "active"),
+	)
+	return nil
+}
+
 func (o *IRedAdminOperator) disableUser(
 	ctx context.Context,
 	uid string,

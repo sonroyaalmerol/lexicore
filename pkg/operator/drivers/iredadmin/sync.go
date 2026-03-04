@@ -134,6 +134,12 @@ func (o *IRedAdminOperator) syncUser(
 		return
 	}
 
+	if err := o.enableUser(ctx, uid, id, dryRun, result); err != nil {
+		o.LogError(fmt.Errorf("enable user %s (uid: %s): %w", id.Email, uid, err))
+		result.RecordError(operator.ActionUpdate, uid, id.Username, err)
+		return
+	}
+
 	newUserData := o.identityToUser(id)
 
 	userData, err := o.getUser(ctx, id.Email)
@@ -168,6 +174,12 @@ func (o *IRedAdminOperator) partialSyncUser(
 			o.LogError(fmt.Errorf("disable user %s (uid: %s): %w", id.Email, uid, err))
 			result.RecordError(operator.ActionUpdate, uid, id.Username, err)
 		}
+		return
+	}
+
+	if err := o.enableUser(ctx, uid, id, dryRun, result); err != nil {
+		o.LogError(fmt.Errorf("enable user %s (uid: %s): %w", id.Email, uid, err))
+		result.RecordError(operator.ActionUpdate, uid, id.Username, err)
 		return
 	}
 
