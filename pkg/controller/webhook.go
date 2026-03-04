@@ -139,6 +139,7 @@ func (m *Manager) flushWebhookUpdates(sourceName string) {
 	for _, targetName := range targetNames {
 		select {
 		case m.queue <- reconcileTask{
+			sourceName:   sourceName,
 			targetName:   targetName,
 			immediate:    true,
 			partialSync:  true,

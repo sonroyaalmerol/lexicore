@@ -22,6 +22,7 @@ import (
 )
 
 type reconcileTask struct {
+	sourceName string
 	targetName string
 	immediate  bool
 	forced     bool
@@ -347,16 +348,6 @@ func (m *Manager) AddSyncTarget(target *manifest.SyncTarget) error {
 		zap.String("target", target.Name),
 	)
 
-	select {
-	case m.queue <- reconcileTask{targetName: target.Name, immediate: true}:
-	case <-m.shutdownCtx.Done():
-	default:
-		m.logger.Warn(
-			"Queue full, new target will be reconciled on next tick",
-			zap.String("target", target.Name),
-		)
-	}
-
 	return nil
 }
 
@@ -390,7 +381,7 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) globalTicker(ctx context.Context) {
 	defer m.wg.Done()
 
-	ticker := time.NewTicker(m.cfg.DefaultSyncPeriod)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	m.reloadFromStore()
@@ -422,7 +413,19 @@ func (m *Manager) scheduleReconciliations() {
 	m.activeOperators.Range(func(name string, target *ActiveOperator) bool {
 		if now.Sub(target.lastReconciled) >= m.cfg.DefaultSyncPeriod {
 			sourceRef := target.manifest.Spec.SourceRef
-			sourceToTargets[sourceRef] = append(sourceToTargets[sourceRef], name)
+			sourceToTargets[sourceRef] = append(
+				sourceToTargets[sourceRef],
+				name,
+			)
+		} else {
+			next := target.lastReconciled.Add(m.cfg.DefaultSyncPeriod)
+			m.logger.Info(
+				"target reconciliation",
+				zap.String("target", target.Name()),
+				zap.Duration("interval", m.cfg.DefaultSyncPeriod),
+				zap.Time("next", next),
+				zap.Duration("secondsleftUntilNext", next.Sub(now)),
+			)
 		}
 		return true
 	})
@@ -436,8 +439,7 @@ func (m *Manager) scheduleReconciliations() {
 
 	for sourceRef, targetNames := range sourceToTargets {
 		task := reconcileTask{
-			targetName: sourceRef,
-			immediate:  false,
+			sourceName: sourceRef,
 			batchID:    batchID,
 		}
 
@@ -488,77 +490,14 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 				return
 			}
 
-			if task.batchID != "" {
-				if _, loaded := m.reconcilingTargets.LoadOrStore(task.targetName, true); loaded {
-					logger.Info(
-						"Skipping batch reconciliation - already in progress",
-						zap.String("source", task.targetName),
-						zap.String("batchID", task.batchID),
-					)
-					continue
-				}
-
-				err := m.reconcileBatch(task)
-				m.reconcilingTargets.Delete(task.targetName)
-
-				if err != nil {
-					logger.Error(
-						"Batch reconciliation failed",
-						zap.String("source", task.targetName),
-						zap.String("batchID", task.batchID),
-						zap.Error(err),
-					)
-				}
-			} else if task.partialSync {
-				if _, loaded := m.reconcilingTargets.LoadOrStore(task.targetName, true); loaded {
-					logger.Info(
-						"Skipping partial reconciliation - already in progress",
-						zap.String("target", task.targetName),
-					)
-					continue
-				}
-
-				err := m.reconcilePartial(task)
-				m.reconcilingTargets.Delete(task.targetName)
-
-				if err != nil {
-					logger.Error(
-						"Partial reconciliation failed",
-						zap.String("target", task.targetName),
-						zap.Error(err),
-					)
-				} else {
-					logger.Debug(
-						"Partial reconciliation completed",
-						zap.String("target", task.targetName),
-						zap.Int("identities", len(task.identityUIDs)),
-						zap.Int("groups", len(task.groupGIDs)),
-					)
-				}
-			} else {
-				if _, loaded := m.reconcilingTargets.LoadOrStore(task.targetName, true); loaded {
-					logger.Info(
-						"Skipping reconciliation - already in progress",
-						zap.String("target", task.targetName),
-					)
-					continue
-				}
-
-				err := m.reconcile(task)
-				m.reconcilingTargets.Delete(task.targetName)
-
-				if err != nil {
-					logger.Error(
-						"Reconciliation failed",
-						zap.String("target", task.targetName),
-						zap.Error(err),
-					)
-				} else {
-					logger.Debug(
-						"Reconciliation completed",
-						zap.String("target", task.targetName),
-					)
-				}
+			if err := m.executeReconciliation(task); err != nil {
+				logger.Error(
+					"Reconciliation failed",
+					zap.String("source", task.sourceName),
+					zap.String("target", task.targetName),
+					zap.String("batchID", task.batchID),
+					zap.Error(err),
+				)
 			}
 		}
 	}
@@ -592,12 +531,13 @@ func (m *Manager) RemoveSyncTarget(name string) {
 }
 
 func (m *Manager) TriggerReconciliation(targetName string) error {
-	if _, ok := m.activeOperators.Load(targetName); !ok {
+	op, ok := m.activeOperators.Load(targetName)
+	if !ok {
 		return fmt.Errorf("target %s not found", targetName)
 	}
 
 	select {
-	case m.queue <- reconcileTask{targetName: targetName, immediate: true, forced: true}:
+	case m.queue <- reconcileTask{sourceName: op.manifest.Spec.SourceRef, targetName: targetName, immediate: true, forced: true}:
 		return nil
 	case <-m.shutdownCtx.Done():
 		return fmt.Errorf("manager is shutting down")

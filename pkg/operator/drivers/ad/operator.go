@@ -169,7 +169,6 @@ func (o *ADOperator) syncIdentity(
 		return
 	}
 
-	desiredDN := o.buildDN(enriched, userBaseDN)
 	attributesToSearch := o.buildAttributesList(enriched)
 
 	sr, err := o.searchUser(conn, searchBaseDN, enriched.Username, attributesToSearch)
@@ -181,7 +180,7 @@ func (o *ADOperator) syncIdentity(
 
 	if len(sr.Entries) == 0 {
 		o.LogError(fmt.Errorf("search failed for %s (uid: %s): user not found", enriched.Username, uid))
-		res.RecordError(operator.ActionSkip, uid, enriched.Username, err)
+		res.RecordError(operator.ActionSkip, uid, enriched.Username, fmt.Errorf("user not found"))
 		return
 	}
 
@@ -202,13 +201,14 @@ func (o *ADOperator) syncIdentity(
 		return
 	}
 
-	if err := o.updateUser(conn, res, desiredDN, *entry, enriched, dryRun); err != nil {
+	newDN, err := o.updateUser(conn, res, userBaseDN, *entry, enriched, dryRun)
+	if err != nil {
 		o.LogError(fmt.Errorf("update %s (uid: %s) failed: %w", enriched.Username, uid, err))
 		res.RecordError(operator.ActionUpdate, uid, enriched.Username, err)
 	}
 
 	currentMemberOf := entry.GetAttributeValues("memberOf")
-	if err := o.syncGroups(conn, res, desiredDN, currentMemberOf, enriched, dryRun); err != nil {
+	if err := o.syncGroups(conn, res, newDN, currentMemberOf, enriched, dryRun); err != nil {
 		o.LogError(fmt.Errorf("group sync %s (uid: %s) failed: %w", enriched.Username, uid, err))
 		res.RecordError(operator.ActionUpdate, uid, enriched.Username, fmt.Errorf("group sync failed: %w", err))
 	}

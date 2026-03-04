@@ -2,6 +2,7 @@ package operator
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -71,13 +72,23 @@ type SyncResult struct {
 	target  string
 	logger  *zap.Logger
 	entries []AuditEntry
+	index   map[string]int
 }
 
 func NewSyncResult(logger *zap.Logger, target string) *SyncResult {
 	return &SyncResult{
 		target: target,
 		logger: logger,
+		index:  make(map[string]int),
 	}
+}
+
+func (r *SyncResult) key(entry AuditEntry) string {
+	hasError := "noerror"
+	if entry.Error != nil {
+		hasError = "error"
+	}
+	return fmt.Sprintf("%s:%s:%s:%s", entry.Target, entry.Name, entry.Action, hasError)
 }
 
 func (r *SyncResult) Record(action Action, uid, name string, changes ...Change) {
@@ -106,7 +117,20 @@ func (r *SyncResult) RecordError(action Action, uid, name string, err error) {
 
 func (r *SyncResult) append(entry AuditEntry) {
 	r.mu.Lock()
+
+	key := r.key(entry)
+
+	if idx, exists := r.index[key]; exists && entry.Error == nil {
+		if len(entry.Changes) > 0 {
+			r.entries[idx].Changes = append(r.entries[idx].Changes, entry.Changes...)
+		}
+		r.mu.Unlock()
+		return
+	}
+
+	index := len(r.entries)
 	r.entries = append(r.entries, entry)
+	r.index[key] = index
 	r.mu.Unlock()
 
 	fields := []zap.Field{

@@ -329,6 +329,7 @@ func (t *GroupAggregationTransformer) getWeightedValue(
 	}
 
 	var mostWeighted any
+	var winningGroupName string
 	maxWeight := -math.MaxFloat64
 	found := false
 
@@ -347,9 +348,14 @@ func (t *GroupAggregationTransformer) getWeightedValue(
 			}
 		}
 
-		if !found || weightFloat > maxWeight {
+		// Condition 1: Higher weight wins
+		// Condition 2: Equal weight, but group name is lexicographically smaller (tie-breaker)
+		isWinner := !found || weightFloat > maxWeight || (weightFloat == maxWeight && group.Name < winningGroupName)
+
+		if isWinner {
 			maxWeight = weightFloat
 			mostWeighted = value
+			winningGroupName = group.Name
 			found = true
 		}
 	}

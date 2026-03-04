@@ -109,16 +109,16 @@ func (o *ADOperator) disableUser(
 func (o *ADOperator) updateUser(
 	conn *ldap.Conn,
 	res *operator.SyncResult,
-	desiredDN string,
+	baseUserDN string,
 	entry ldap.Entry,
 	id source.Identity,
 	isDryRun bool,
-) error {
+) (string, error) {
 	modReq := ldap.NewModifyRequest(entry.DN, nil)
 	var changes []operator.Change
 
 	for k, v := range id.Attributes {
-		if k == "baseDN" || k == "adGroups" {
+		if k == "baseDN" || k == "adGroups" || k == "disabled" || k == "cn" {
 			continue
 		}
 
@@ -153,32 +153,36 @@ func (o *ADOperator) updateUser(
 		}
 	}
 
-	if len(changes) == 0 {
-		return nil
-	}
-
 	if !isDryRun {
 		if err := conn.Modify(modReq); err != nil {
-			return err
+			return entry.DN, err
 		}
 	}
 
+	newDN := entry.DN
+
+	dnSplit := strings.SplitN(entry.DN, ",", 2)
+	desiredDN := fmt.Sprintf("%s,%s", dnSplit[0], baseUserDN)
+
 	if entry.DN != desiredDN {
-		dnSplit := strings.SplitN(entry.DN, ",", 2)
 		desiredDnSplit := strings.SplitN(desiredDN, ",", 2)
 		if len(dnSplit) == 2 && len(desiredDnSplit) == 2 {
 			changes = append(changes, operator.AttrChange("dn", entry.DN, desiredDN))
 			if !isDryRun {
 				moveReq := ldap.NewModifyDNRequest(entry.DN, dnSplit[0], true, desiredDnSplit[1])
 				if err := conn.ModifyDN(moveReq); err != nil {
-					return err
+					return entry.DN, err
 				}
 			}
+			newDN = desiredDN
 		}
 	}
 
-	res.Record(operator.ActionUpdate, id.UID, id.Username, changes...)
-	return nil
+	if len(changes) > 0 {
+		res.Record(operator.ActionUpdate, id.UID, id.Username, changes...)
+	}
+
+	return newDN, nil
 }
 
 func (o *ADOperator) syncGroups(
