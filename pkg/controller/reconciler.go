@@ -18,6 +18,15 @@ import (
 	"go.uber.org/zap"
 )
 
+func (m *Manager) computeManifestHash(v any) (string, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum), nil
+}
+
 func (m *Manager) computeSourceDataHash(
 	identities map[string]source.Identity,
 	groups map[string]source.Group,
@@ -84,6 +93,24 @@ func (m *Manager) reconcileBatch(sourceRef, batchID string) error {
 			zap.Error(err),
 		)
 	} else {
+		newHash, err := m.computeManifestHash(freshSourceManifest)
+		if err != nil {
+			m.logger.Warn("Failed to hash source manifest", zap.Error(err))
+		} else {
+			if prev, exists := m.sourceManifestHashes.Load(sourceRef); !exists || prev != newHash {
+				m.logger.Info(
+					"Source manifest changed, invalidating source data cache",
+					zap.String("source", sourceRef),
+				)
+				m.activeOperators.Range(func(name string, t *ActiveOperator) bool {
+					if t.manifest.Spec.SourceRef == sourceRef {
+						m.sourceDataHashes.Delete(name)
+					}
+					return true
+				})
+				m.sourceManifestHashes.Store(sourceRef, newHash)
+			}
+		}
 		src.manifest = freshSourceManifest
 	}
 
@@ -101,6 +128,19 @@ func (m *Manager) reconcileBatch(sourceRef, batchID string) error {
 		}
 		m.activeOperators.Range(func(name string, target *ActiveOperator) bool {
 			if fresh, ok := freshByName[name]; ok {
+				newHash, err := m.computeManifestHash(fresh)
+				if err != nil {
+					m.logger.Warn("Failed to hash target manifest", zap.Error(err))
+				} else {
+					if prev, exists := m.targetManifestHashes.Load(name); !exists || prev != newHash {
+						m.logger.Info(
+							"Target manifest changed, invalidating source data cache",
+							zap.String("target", name),
+						)
+						m.sourceDataHashes.Delete(name)
+						m.targetManifestHashes.Store(name, newHash)
+					}
+				}
 				target.manifest = fresh
 			}
 			return true
@@ -423,6 +463,19 @@ func (m *Manager) loadTargetAndSource(
 			zap.Error(err),
 		)
 	} else {
+		newHash, err := m.computeManifestHash(freshManifest)
+		if err != nil {
+			m.logger.Warn("Failed to hash target manifest", zap.Error(err))
+		} else {
+			if prev, exists := m.targetManifestHashes.Load(targetName); !exists || prev != newHash {
+				m.logger.Info(
+					"Target manifest changed, invalidating source data cache",
+					zap.String("target", targetName),
+				)
+				m.sourceDataHashes.Delete(targetName)
+				m.targetManifestHashes.Store(targetName, newHash)
+			}
+		}
 		target.manifest = freshManifest
 	}
 
@@ -443,6 +496,20 @@ func (m *Manager) loadTargetAndSource(
 			zap.Error(err),
 		)
 	} else {
+		newHash, err := m.computeManifestHash(freshSourceManifest)
+		if err != nil {
+			m.logger.Warn("Failed to hash source manifest", zap.Error(err))
+		} else {
+			sourceKey := src.manifest.Name
+			if prev, exists := m.sourceManifestHashes.Load(sourceKey); !exists || prev != newHash {
+				m.logger.Info(
+					"Source manifest changed, invalidating source data cache",
+					zap.String("source", sourceKey),
+				)
+				m.sourceDataHashes.Delete(targetName)
+				m.sourceManifestHashes.Store(sourceKey, newHash)
+			}
+		}
 		src.manifest = freshSourceManifest
 	}
 
