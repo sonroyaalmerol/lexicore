@@ -74,7 +74,8 @@ func main() {
 		}
 	}()
 
-	mgr.Start(ctx)
+	go mgr.Start(ctx)
+
 	<-ctx.Done()
 	logger.Info("Shutting down...")
 
