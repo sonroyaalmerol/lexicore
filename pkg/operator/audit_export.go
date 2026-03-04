@@ -2,6 +2,8 @@ package operator
 
 import (
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/xuri/excelize/v2"
@@ -34,6 +36,10 @@ func ExportToExcel(file *os.File, entries []AuditEntry) error {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue(sheet, cell, h)
 	}
+
+	slices.SortFunc(entries, func(a, b AuditEntry) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	row := 2
 	for _, e := range entries {

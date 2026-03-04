@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/smtp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -373,6 +374,10 @@ func (s *EmailAuditSender) Send(targetName string, entries []AuditEntry) error {
 func (s *EmailAuditSender) renderHTML(targetName string, entries []AuditEntry) (string, error) {
 	counts := auditCounts{Total: len(entries)}
 	emailEntries := make([]auditEmailEntry, 0, len(entries))
+
+	slices.SortFunc(emailEntries, func(a, b auditEmailEntry) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	for _, e := range entries {
 		switch e.Action {
