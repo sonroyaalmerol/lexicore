@@ -24,6 +24,7 @@ import (
 type reconcileTask struct {
 	targetName string
 	immediate  bool
+	forced     bool
 	batchID    string
 
 	// For partial sync
@@ -497,7 +498,7 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 					continue
 				}
 
-				err := m.reconcileBatch(task.targetName, task.batchID)
+				err := m.reconcileBatch(task)
 				m.reconcilingTargets.Delete(task.targetName)
 
 				if err != nil {
@@ -517,7 +518,7 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 					continue
 				}
 
-				err := m.reconcilePartial(task.targetName, task.identityUIDs, task.groupGIDs)
+				err := m.reconcilePartial(task)
 				m.reconcilingTargets.Delete(task.targetName)
 
 				if err != nil {
@@ -543,7 +544,7 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 					continue
 				}
 
-				err := m.reconcile(task.targetName)
+				err := m.reconcile(task)
 				m.reconcilingTargets.Delete(task.targetName)
 
 				if err != nil {
@@ -557,10 +558,6 @@ func (m *Manager) worker(ctx context.Context, workerID int) {
 						"Reconciliation completed",
 						zap.String("target", task.targetName),
 					)
-
-					if target, ok := m.activeOperators.Load(task.targetName); ok {
-						target.lastReconciled = time.Now()
-					}
 				}
 			}
 		}
@@ -600,7 +597,7 @@ func (m *Manager) TriggerReconciliation(targetName string) error {
 	}
 
 	select {
-	case m.queue <- reconcileTask{targetName: targetName, immediate: true}:
+	case m.queue <- reconcileTask{targetName: targetName, immediate: true, forced: true}:
 		return nil
 	case <-m.shutdownCtx.Done():
 		return fmt.Errorf("manager is shutting down")
