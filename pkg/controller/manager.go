@@ -387,8 +387,8 @@ func (m *Manager) globalTicker(ctx context.Context) {
 	ticker := time.NewTicker(m.cfg.DefaultSyncPeriod)
 	defer ticker.Stop()
 
-		m.reloadFromStore()
-		m.scheduleReconciliations()
+	m.reloadFromStore()
+	m.scheduleReconciliations()
 
 	m.logger.Info(
 		"Global ticker started",
