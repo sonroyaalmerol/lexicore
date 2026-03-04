@@ -95,8 +95,8 @@ func NewManager(
 	ctx, cancel := context.WithCancel(ctx)
 	m := &Manager{
 		db:                    db,
-				sourceManifestHashes :  xsync.NewMap[string, string](),
-				targetManifestHashe s:  xsync.NewMap[string, string](),
+		sourceManifestHashes:  xsync.NewMap[string, string](),
+		targetManifestHashes:  xsync.NewMap[string, string](),
 		sourceFactory:         xsync.NewMap[string, func() source.Source](),
 		operatorFactory:       xsync.NewMap[string, func() operator.Operator](),
 		activeOperators:       xsync.NewMap[string, *ActiveOperator](),
