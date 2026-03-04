@@ -115,7 +115,7 @@ func (o *DovecotOperator) applyMailboxACLs(
 		}
 	}
 
-	return nil
+	return errors
 }
 
 func (o *DovecotOperator) Close() error {

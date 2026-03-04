@@ -309,6 +309,7 @@ func (o *DovecotOperator) applyACLChanges(ctx context.Context) error {
 				return
 			}
 
+			uidHasError := make(map[string]struct{})
 			if errs := o.applyMailboxACLs(ctx, sharedFolder, mailboxPath, diff); len(errs) > 0 {
 				for _, err := range errs {
 					o.LogError(fmt.Errorf(
@@ -320,6 +321,7 @@ func (o *DovecotOperator) applyACLChanges(ctx context.Context) error {
 						uid = err.username
 					}
 
+					uidHasError[uid] = struct{}{}
 					sc.state.Result.RecordError(operator.ActionSkip, uid, err.username, err.err)
 				}
 				return
@@ -350,7 +352,8 @@ func (o *DovecotOperator) applyACLChanges(ctx context.Context) error {
 				oldAcls := diff.Old[identity.Username]
 				newAcls := diff.New[identity.Username]
 
-				if len(oldAcls)+len(newAcls) > 0 {
+				_, uidError := uidHasError[uid]
+				if len(oldAcls)+len(newAcls) > 0 && !uidError {
 					changes[uid] = append(
 						changes[uid],
 						operator.AttrChange(aclPath, diff.Old[identity.Username], diff.New[identity.Username]),
