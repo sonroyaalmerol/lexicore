@@ -28,7 +28,7 @@ func (m *Manager) computeSourceDataHash(
 		return "", err
 	}
 
-	return fmt.Sprintf("%d", identitiesHash+groupsHash), nil
+	return fmt.Sprintf("%d-%d", identitiesHash, groupsHash), nil
 }
 
 func (m *Manager) hasSourceDataChanged(
