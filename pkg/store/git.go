@@ -97,22 +97,3 @@ func (g *GitStore) GetSyncTargets(
 	return g.inner.GetSyncTargets(ctx)
 }
 
-func (g *GitStore) Watch(ctx context.Context, onChange func()) error {
-	go func() {
-		ticker := time.NewTicker(g.interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := g.pull(); err == nil {
-					onChange()
-				}
-			}
-		}
-	}()
-
-	return nil
-}

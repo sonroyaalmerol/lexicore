@@ -142,15 +142,6 @@ func NewManager(
 		}
 	})
 
-	m.reloadFromStore()
-
-	if err := db.Watch(ctx, func() {
-		m.logger.Info("Store changed, reloading manifests")
-		m.reloadFromStore()
-	}); err != nil {
-		logger.Error("Failed to start store watcher", zap.Error(err))
-	}
-
 	m.wg.Go(func() {
 		m.webhookProcessor(ctx)
 	})
@@ -407,6 +398,7 @@ func (m *Manager) globalTicker(ctx context.Context) {
 			m.logger.Info("Global ticker stopped")
 			return
 		case <-ticker.C:
+			m.reloadFromStore()
 			m.scheduleReconciliations()
 		}
 	}

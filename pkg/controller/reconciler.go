@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"codeberg.org/lexicore/lexicore/pkg/manifest"
 	"codeberg.org/lexicore/lexicore/pkg/operator"
 	"codeberg.org/lexicore/lexicore/pkg/source"
 	"codeberg.org/lexicore/lexicore/pkg/transformer"
@@ -66,9 +68,43 @@ func (m *Manager) hasSourceDataChanged(targetName string, currentHash string) bo
 }
 
 func (m *Manager) reconcileBatch(sourceRef, batchID string) error {
+	ctx, cancel := context.WithTimeout(m.shutdownCtx, 15*time.Second)
+	defer cancel()
+
 	src, ok := m.activeSources.Load(sourceRef)
 	if !ok {
 		return fmt.Errorf("source %s not found", sourceRef)
+	}
+
+	freshSourceManifest, err := m.loadSourceManifest(ctx, sourceRef)
+	if err != nil {
+		m.logger.Warn(
+			"Failed to refresh source manifest, using cached version",
+			zap.String("source", sourceRef),
+			zap.Error(err),
+		)
+	} else {
+		src.manifest = freshSourceManifest
+	}
+
+	allTargetManifests, err := m.db.GetSyncTargets(ctx)
+	if err != nil {
+		m.logger.Warn(
+			"Failed to refresh target manifests for batch, using cached versions",
+			zap.String("source", sourceRef),
+			zap.Error(err),
+		)
+	} else {
+		freshByName := make(map[string]*manifest.SyncTarget, len(allTargetManifests))
+		for _, t := range allTargetManifests {
+			freshByName[t.Name] = t
+		}
+		m.activeOperators.Range(func(name string, target *ActiveOperator) bool {
+			if fresh, ok := freshByName[name]; ok {
+				target.manifest = fresh
+			}
+			return true
+		})
 	}
 
 	startTime := time.Now()
@@ -336,10 +372,58 @@ func (m *Manager) reconcileTarget(
 	return nil
 }
 
-func (m *Manager) loadTargetAndSource(targetName string) (*ActiveOperator, *ActiveSource, error) {
+func (m *Manager) loadTargetManifest(
+	ctx context.Context,
+	targetName string,
+) (*manifest.SyncTarget, error) {
+	targets, err := m.db.GetSyncTargets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load sync targets: %w", err)
+	}
+	for _, t := range targets {
+		if t.Name == targetName {
+			return t, nil
+		}
+	}
+	return nil, fmt.Errorf("target %s not found in store", targetName)
+}
+
+func (m *Manager) loadSourceManifest(
+	ctx context.Context,
+	sourceRef string,
+) (*manifest.IdentitySource, error) {
+	sources, err := m.db.GetIdentitySources(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load identity sources: %w", err)
+	}
+	for _, s := range sources {
+		if s.Name == sourceRef {
+			return s, nil
+		}
+	}
+	return nil, fmt.Errorf("source %s not found in store", sourceRef)
+}
+
+func (m *Manager) loadTargetAndSource(
+	targetName string,
+) (*ActiveOperator, *ActiveSource, error) {
+	ctx, cancel := context.WithTimeout(m.shutdownCtx, 15*time.Second)
+	defer cancel()
+
 	target, ok := m.activeOperators.Load(targetName)
 	if !ok {
 		return nil, nil, fmt.Errorf("failed to load operator for %s", targetName)
+	}
+
+	freshManifest, err := m.loadTargetManifest(ctx, targetName)
+	if err != nil {
+		m.logger.Warn(
+			"Failed to refresh target manifest, using cached version",
+			zap.String("target", targetName),
+			zap.Error(err),
+		)
+	} else {
+		target.manifest = freshManifest
 	}
 
 	src, ok := m.activeSources.Load(target.manifest.Spec.SourceRef)
@@ -349,6 +433,17 @@ func (m *Manager) loadTargetAndSource(targetName string) (*ActiveOperator, *Acti
 			target.manifest.Spec.SourceRef,
 			targetName,
 		)
+	}
+
+	freshSourceManifest, err := m.loadSourceManifest(ctx, src.manifest.Name)
+	if err != nil {
+		m.logger.Warn(
+			"Failed to refresh source manifest, using cached version",
+			zap.String("source", src.manifest.Name),
+			zap.Error(err),
+		)
+	} else {
+		src.manifest = freshSourceManifest
 	}
 
 	return target, src, nil

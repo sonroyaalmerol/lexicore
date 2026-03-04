@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	Path                  string        `yaml:"-"`
 	Server                ServerConfig  `yaml:"server"`
 	Logging               LoggingConfig `yaml:"logging"`
 	Metrics               MetricsConfig `yaml:"metrics"`
@@ -132,6 +133,7 @@ func DefaultConfig() *Config {
 
 func LoadConfig(path string) (*Config, error) {
 	cfg := DefaultConfig()
+	cfg.Path = path
 
 	if path != "" {
 		f, err := os.Open(path)
@@ -149,4 +151,13 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func (c *Config) Reload() error {
+	fresh, err := LoadConfig(c.Path)
+	if err != nil {
+		return err
+	}
+	*c = *fresh
+	return nil
 }

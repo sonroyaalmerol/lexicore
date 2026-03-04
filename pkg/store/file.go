@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"codeberg.org/lexicore/lexicore/pkg/manifest"
-	"github.com/fsnotify/fsnotify"
 	"github.com/goccy/go-yaml"
 )
 
@@ -78,39 +77,6 @@ func (f *FileStore) GetSyncTargets(
 ) ([]*manifest.SyncTarget, error) {
 	_, targets, err := f.load(ctx)
 	return targets, err
-}
-
-func (f *FileStore) Watch(ctx context.Context, onChange func()) error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-
-	if err := watcher.Add(f.dir); err != nil {
-		watcher.Close()
-		return err
-	}
-
-	go func() {
-		defer watcher.Close()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				ext := filepath.Ext(event.Name)
-				if ext == ".yaml" || ext == ".yml" {
-					onChange()
-				}
-			case <-watcher.Errors:
-			}
-		}
-	}()
-
-	return nil
 }
 
 func parseYAMLFile[T any](path string) (*T, error) {
