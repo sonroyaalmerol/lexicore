@@ -3,17 +3,16 @@ module codeberg.org/lexicore/lexicore
 go 1.25.5
 
 require (
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.16.4
 	github.com/go-ldap/ldap/v3 v3.4.12
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/goccy/go-yaml v1.19.2
+	github.com/gohugoio/hashstructure v0.6.0
 	github.com/huandu/go-clone v1.7.3
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/lib/pq v1.11.1
 	github.com/microsoft/go-mssqldb v1.9.6
 	github.com/puzpuzpuz/xsync/v4 v4.3.0
-	github.com/sethvargo/go-password v0.3.1
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.11.1
 	github.com/xuri/excelize/v2 v2.10.0
@@ -22,7 +21,6 @@ require (
 	goauthentik.io/api/v3 v3.2026020.14
 	golang.org/x/text v0.31.0
 	golang.org/x/time v0.9.0
-	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/apimachinery v0.35.0
 	modernc.org/sqlite v1.44.3
 )
@@ -79,6 +77,7 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
