@@ -72,14 +72,20 @@ func (o *DovecotOperator) Validate(
 	return nil
 }
 
+type applyError struct {
+	err      error
+	username string
+}
+
 func (o *DovecotOperator) applyMailboxACLs(
 	ctx context.Context,
 	sharedFolder string,
 	mailboxPath string,
 	diff *MailboxDiff,
-) error {
+) []applyError {
 	syncCtx := syncCtxFrom(ctx)
 	mailboxKey := fmt.Sprintf("%s/%s", sharedFolder, mailboxPath)
+	errors := make([]applyError, 0, len(diff.ToSet)+len(diff.ToRemove))
 
 	for username, rights := range diff.ToSet {
 		if syncCtx.state.DryRun {
@@ -89,7 +95,8 @@ func (o *DovecotOperator) applyMailboxACLs(
 			)
 		} else {
 			if err := o.setMailboxACL(ctx, sharedFolder, mailboxPath, username, rights); err != nil {
-				return fmt.Errorf("failed to set ACL for %s: %w", username, err)
+				errors = append(errors, applyError{err: fmt.Errorf("failed to set ACL: %w", err), username: username})
+				continue
 			}
 		}
 	}
@@ -102,7 +109,8 @@ func (o *DovecotOperator) applyMailboxACLs(
 			)
 		} else {
 			if err := o.deleteMailboxACL(ctx, sharedFolder, mailboxPath, username); err != nil {
-				return fmt.Errorf("failed to delete ACL for %s: %w", username, err)
+				errors = append(errors, applyError{err: fmt.Errorf("failed to delete ACL: %w", err), username: username})
+				continue
 			}
 		}
 	}

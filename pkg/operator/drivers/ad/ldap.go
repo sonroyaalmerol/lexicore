@@ -153,7 +153,7 @@ func (o *ADOperator) updateUser(
 		}
 	}
 
-	if !isDryRun {
+	if !isDryRun && len(modReq.Changes) > 0 {
 		if err := conn.Modify(modReq); err != nil {
 			return entry.DN, err
 		}

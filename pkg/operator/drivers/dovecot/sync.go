@@ -18,6 +18,7 @@ type syncContext struct {
 	usersAffectedByMailbox *xsync.Map[string, map[string]struct{}]
 	userMailboxMap         *xsync.Map[string, []string]
 	expansionCache         *xsync.Map[string, []string]
+	usernameToUid          *xsync.Map[string, string]
 	disabledUsers          *xsync.Map[string, struct{}]
 	state                  *operator.SyncState
 }
@@ -81,6 +82,7 @@ func (o *DovecotOperator) Sync(
 		userMailboxMap:         xsync.NewMap[string, []string](),
 		expansionCache:         xsync.NewMap[string, []string](),
 		disabledUsers:          xsync.NewMap[string, struct{}](),
+		usernameToUid:          xsync.NewMap[string, string](),
 		state:                  state,
 	}
 	defer func() {
@@ -90,6 +92,7 @@ func (o *DovecotOperator) Sync(
 		sc.usersAffectedByMailbox.Clear()
 		sc.userMailboxMap.Clear()
 		sc.disabledUsers.Clear()
+		sc.usernameToUid.Clear()
 	}()
 
 	ctx = context.WithValue(ctx, syncContextKey{}, sc)
@@ -121,6 +124,8 @@ func (o *DovecotOperator) processIdentity(
 	identity source.Identity,
 ) {
 	sc := syncCtxFrom(ctx)
+
+	sc.usernameToUid.Store(identity.Username, uid)
 
 	if identity.Disabled {
 		mailboxList, err := o.getAllNonPersonalMailbox(ctx, identity.Username)
@@ -304,10 +309,19 @@ func (o *DovecotOperator) applyACLChanges(ctx context.Context) error {
 				return
 			}
 
-			if err := o.applyMailboxACLs(ctx, sharedFolder, mailboxPath, diff); err != nil {
-				o.LogError(fmt.Errorf(
-					"failed to apply ACLs for %s: %w", mailboxKey, err,
-				))
+			if errs := o.applyMailboxACLs(ctx, sharedFolder, mailboxPath, diff); len(errs) > 0 {
+				for _, err := range errs {
+					o.LogError(fmt.Errorf(
+						"failed to apply ACLs for %s (user: %s): %w", mailboxKey, err.username, err.err,
+					))
+
+					uid, ok := sc.usernameToUid.Load(err.username)
+					if !ok {
+						uid = err.username
+					}
+
+					sc.state.Result.RecordError(operator.ActionSkip, uid, err.username, err.err)
+				}
 				return
 			}
 
